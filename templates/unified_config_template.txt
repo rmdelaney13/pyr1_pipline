@@ -1,0 +1,313 @@
+# =============================================================================
+# UNIFIED PIPELINE CONFIG: Docking + Design
+# =============================================================================
+# This config file controls both the docking pipeline and the design pipeline.
+#
+# WORKFLOW:
+#   1. Docking:  python docking/scripts/run_docking_workflow.py config.txt
+#   2. Design:   python design/scripts/run_design_pipeline.py config.txt
+#
+# Copy this template to your campaign directory and edit the sections below.
+# =============================================================================
+
+
+[DEFAULT]
+# =============================================================================
+# ROOT PATHS (Edit for each campaign/machine)
+# =============================================================================
+
+# Pipeline repository root (makes all other paths relocatable)
+PIPE_ROOT = /projects/ryde3462/pyr1_pipeline
+
+# Campaign working directory (project space or scratch)
+CAMPAIGN_ROOT = /projects/ryde3462/xanthurenic_acid
+
+# High-throughput outputs (always use scratch for large data)
+SCRATCH_ROOT = /scratch/alpine/ryde3462/xan_design
+
+# Rosetta installation path (for legacy scripts)
+PathToRosetta = /projects/ryde3462/software/rosetta_bin_linux_2021.16.61629_bundle
+
+# PyRosetta path (usually empty if using conda env)
+PathToPyrosetta =
+
+
+# =============================================================================
+# PROTEIN/LIGAND TEMPLATES (Rarely change within same protein target)
+# =============================================================================
+
+# PDB templates for docking
+# Pre = with ligand for alignment, Post = without ligand for docking
+PrePDBFileName  = %(PIPE_ROOT)s/docking/ligand_alignment/files_for_PYR1_docking/3QN1_H2O.pdb
+PostPDBFileName = %(PIPE_ROOT)s/docking/ligand_alignment/files_for_PYR1_docking/3QN1_nolig_H2O.pdb
+
+# Template ligand residue for alignment
+ResidueNumber = 1
+ChainLetter = X
+
+# Protein params files (if needed for non-standard residues)
+ParamsList = %(PIPE_ROOT)s/docking/ligand_alignment/files_for_PYR1_docking/A8T.params
+
+# Ligand residue numbering (usually 1)
+LigandResidueNumber = 1
+
+# Where create_table writes conformer params/PDBs
+PathToConformers = %(CAMPAIGN_ROOT)s/conformers
+
+# Table output names (used by both docking and design)
+CSVFileName = ligands.csv
+PKLFileName = ligands.pkl
+
+# Auto-alignment (usually False - manual is more reliable)
+AutoGenerateAlignment = False
+
+
+# =============================================================================
+# SECTION 1: DOCKING CONFIGURATION
+# =============================================================================
+
+[MULTIPLE_PASSES]
+# Number of independent docking runs (usually 1 when using SLURM arrays)
+NumPasses = 1
+
+# Base output directory for multi-pass runs
+OutputDirBase = %(SCRATCH_ROOT)s/pass_output
+
+
+[create_table]
+# =============================================================================
+# LIGAND INPUT FILES
+# =============================================================================
+
+# Input SDF conformer files (supports wildcards like *.sdf)
+MoleculeSDFs = %(CAMPAIGN_ROOT)s/conformers/*.sdf
+
+# H-bond acceptor detection mode
+AcceptorMode = generic
+DynamicAlignmentDebug = True
+
+# Output table paths
+CSVFileName = %(CAMPAIGN_ROOT)s/ligands.csv
+PKLFileName = %(CAMPAIGN_ROOT)s/ligands.pkl
+
+# Naming options
+UseMoleculeID = False
+NoName = True
+
+# Dynamic H-bond acceptor alignment
+# This auto-generates alignments based on RDKit-detected acceptors
+DynamicAcceptorAlignment = True
+IncludeReverseNeighborOrder = False
+MaxDynamicAlignments = 20
+
+# Target atom triplets on template ligand (semicolon-separated)
+# Example: Align to O2 with two orientations
+TargetAtomTriplets = O2-C11-C9; O2-C9-C11
+
+
+[grade_conformers]
+# =============================================================================
+# DOCKING PARAMETERS
+# =============================================================================
+
+# Logging and diagnostics
+DebugEveryN = 25
+SlowMinimizationSeconds = 5.0
+
+# Main docking output directory
+OutputDir = %(SCRATCH_ROOT)s/docked
+
+# Collision grid settings
+BinWidth = 1.0
+VDW_Modifier = 0.70
+IncludeSC = True
+
+# Rigid-body perturbation
+JumpNum = 2
+Rotation = 25
+Translation = 0.5
+MaxPerturbTries = 5
+
+# H-bond geometry filtering
+EnableHBondGeometryFilter = True
+UseClosestLigandAcceptor = True
+
+# H-bond distance/angle thresholds
+HBondDistanceIdeal = 2.8
+HBondDistanceIdealBuffer = 0.8
+HBondDonorAngleMin = 120
+
+# H-bond constraints during minimization
+HBondConstraintWeight = 4.0
+EnableDynamicWaterPullConstraint = True
+HBondConstraintSD = 0.25
+HBondConstraintCaptureMax = 8.0
+
+# Final geometry enforcement
+EnforceFinalIdealGeometry = True
+HBondDonorAngleIdeal = 180
+HBondDonorAngleBuffer = 40
+RequireAcceptorIdealWindow = False
+
+# Sidechains to preserve during clash checking
+BackboneClashKeepSidechains = 86 113 114
+
+# Energy cutoff for passing poses
+MaxScore = -300
+
+# Mutations (if doing sequence docking)
+MutatePositions = 59 79 81 90 92 106 108 118 120 139 157 158
+MutateAA        = Q  I  L  M  V  A  G  D  H  V
+
+# Glycine shave positions (relaxed positions during docking)
+GlycineShavePositions = 59 79 81 90 92 106 108 115 118 120 139 157 158 161 162 165
+
+
+# =============================================================================
+# SLURM ARRAY & CLUSTERING
+# =============================================================================
+
+# Number of SLURM array tasks (1 = single job, >1 = parallel arrays)
+# Set this to split work across multiple nodes
+ArrayTaskCount = 10
+
+# In-array clustering (False for array jobs, True for single runs)
+# When False, run cluster_docked_post_array.py after all arrays complete
+EnablePoseClusteringInArrayTask = False
+
+# RMSD cutoff for ligand heavy-atom clustering (Angstroms)
+ClusterRMSDCutoff = 0.75
+
+# Final clustered output directory (leave empty for default: OutputDir/clustered_final)
+ClusteredOutputDir =
+
+# CSV file name for H-bond geometry summary (per array task)
+GeometryCSVName = hbond_geometry_summary.csv
+
+# Prefix for output PDB files (e.g., "a" gives a0001_rep_1.pdb)
+OutputPrefix =
+
+
+# =============================================================================
+# SECTION 2: DESIGN CONFIGURATION
+# =============================================================================
+
+[design]
+# =============================================================================
+# CORE DESIGN SETTINGS
+# =============================================================================
+
+# Design output directory (created under SCRATCH_ROOT)
+DesignRoot = design
+
+# Number of design iteration rounds (1-2 typical)
+# Iteration 1: Docked PDBs → MPNN → Rosetta → Filter
+# Iteration 2: Filtered iter 1 → MPNN → Rosetta → Filter
+DesignIterationRounds = 1
+
+
+# =============================================================================
+# LIGANDMPNN SETTINGS
+# =============================================================================
+
+# Template MPNN submit script (will be auto-configured with correct paths)
+MPNNScript = %(PIPE_ROOT)s/design/instructions/ligand_alignment_mpnni_grouped.sh
+
+# MPNN sampling parameters
+MPNNBatchSize = 40          # Number of sequences to generate per parent structure
+MPNNTemperature = 0.3       # Sampling temperature (lower = more conservative)
+
+# Residues to redesign (space-separated: ChainRes format, e.g., A59 A79 ...)
+# Note: These match your GlycineShavePositions above
+DesignResidues = 59 79 81 90 92 106 108 115 118 120 139 157 158 161 162 165
+
+# Optional: MPNN bias/omit files (leave empty to use defaults in script)
+MPNNOmitDesignFile = %(PIPE_ROOT)s/design/instructions/LCA_omit_design_59.json
+MPNNBiasFile = %(PIPE_ROOT)s/design/instructions/LCA_bias_AA_per_residue.json
+
+
+# =============================================================================
+# ROSETTA RELAX SETTINGS
+# =============================================================================
+
+# Template Rosetta submit script (will be auto-configured)
+RosettaScript = %(PIPE_ROOT)s/design/instructions/submit_pyrosetta_general_threading_relax.sh
+
+# Rosetta relax Python script (called by submit script)
+RosettaRelaxPy = %(PIPE_ROOT)s/design/instructions/general_relax.py
+
+# Ligand params file (REQUIRED - must match your ligand)
+# Usually generated by create_table.py from the first conformer
+LigandParams = %(CAMPAIGN_ROOT)s/conformers/0/0.params
+
+
+# =============================================================================
+# FILTERING SETTINGS
+# =============================================================================
+
+# Filter script (standard or custom)
+FilterScript = %(PIPE_ROOT)s/design/instructions/relax_2_filter__allpolar_unsats.py
+
+# Filtering thresholds
+FilterTargetN = 1000            # Final number of designs to keep
+FilterMaxUnsats = 1             # Maximum buried unsatisfied polars (lower = stricter)
+FilterMaxPerParent = 20         # Maximum designs per parent dock (diversity control)
+
+# Optional: Relax specific filter requirements
+# Set to True to ignore that specific check
+FilterIgnoreO1 = False          # Require O1 polar contact
+FilterIgnoreO2 = False          # Require O2 polar contact
+FilterIgnoreCharge = False      # Require charge satisfaction
+
+
+# =============================================================================
+# AF3 PREPARATION SETTINGS
+# =============================================================================
+
+# AF3 template JSON files (must have ligand SMILES field at sequences[N].ligand.smiles)
+AF3BinaryTemplate = %(PIPE_ROOT)s/design/templates/pyr1_binary_template.json
+AF3TernaryTemplate = %(PIPE_ROOT)s/design/templates/pyr1_ternary_template.json
+
+# Ligand SDF for SMILES extraction (optional)
+# If specified, SMILES will be auto-extracted from SDF and inserted into AF3 templates
+# If empty, you must manually update templates or provide SMILES another way
+LigandSDF = %(CAMPAIGN_ROOT)s/conformers/0/0.sdf
+
+
+# =============================================================================
+# HELPER SCRIPT PATHS (Usually don't need to change)
+# =============================================================================
+
+# Score aggregation
+AggregateScoresScript = %(PIPE_ROOT)s/design/instructions/aggregate_scores.py
+
+# FASTA generation (from LigandMPNN repo)
+SplitToFastaScript = /projects/ryde3462/software/LigandMPNN/ligand_alignment_mpnn/scripts/split_and_mutate_to_fasta.py
+
+# AF3 JSON generation (from LigandMPNN repo)
+MakeAF3JSONsScript = /projects/ryde3462/software/LigandMPNN/ligand_alignment_mpnn/scripts/make_af3_jsons.py
+
+
+# =============================================================================
+# END OF UNIFIED CONFIG
+# =============================================================================
+#
+# USAGE EXAMPLES:
+#
+# 1. Run complete pipeline (docking + design):
+#    python docking/scripts/run_docking_workflow.py config.txt
+#    python design/scripts/run_design_pipeline.py config.txt
+#
+# 2. Run docking only:
+#    python docking/scripts/run_docking_workflow.py config.txt
+#
+# 3. Run design only (docking already complete):
+#    python design/scripts/run_design_pipeline.py config.txt
+#
+# 4. Run specific design iteration:
+#    python design/scripts/run_design_pipeline.py config.txt --iteration 2
+#
+# 5. Dry run (generate scripts, don't submit):
+#    python design/scripts/run_design_pipeline.py config.txt --dry-run
+#
+# =============================================================================

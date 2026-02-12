@@ -1,0 +1,113 @@
+# =============================================================================
+# Design Pipeline Configuration Template
+# =============================================================================
+# RECOMMENDED: Use the unified config template instead:
+#   templates/unified_config_template.txt
+#
+# This file shows ONLY the [design] section for reference.
+# Add this section to your config.txt file to enable the design pipeline.
+#
+# The design pipeline automates:
+#   1. LigandMPNN design on docked structures
+#   2. Rosetta relax of MPNN sequences
+#   3. Score aggregation and filtering
+#   4. FASTA generation
+#   5. AF3 JSON preparation with SMILES
+#
+# Usage:
+#   python design/scripts/run_design_pipeline.py config.txt
+#
+# =============================================================================
+
+[design]
+# === Core Paths ===
+# Where to store all design outputs (created under SCRATCH_ROOT)
+DesignRoot = design
+
+# Number of design iterations (1-2 typical)
+# Iteration 1: Docked PDBs → MPNN → Rosetta → Filter
+# Iteration 2: Filtered from iter 1 → MPNN → Rosetta → Filter
+DesignIterationRounds = 1
+
+# === LigandMPNN Settings ===
+# Template submit script (will be auto-configured with correct paths)
+MPNNScript = %(PIPE_ROOT)s/design/instructions/ligand_alignment_mpnni_grouped.sh
+
+# MPNN parameters
+MPNNBatchSize = 40
+MPNNTemperature = 0.3
+
+# Design residues (space-separated, e.g., "59 79 81 90 92 ...")
+DesignResidues = 59 79 81 90 92 106 108 115 118 120 139 157 158 161 162 165
+
+# Optional: Omit/bias JSON files for MPNN
+# Leave empty to use defaults in ligand_alignment_mpnni_grouped.sh
+MPNNOmitDesignFile = %(PIPE_ROOT)s/design/instructions/LCA_omit_design_59.json
+MPNNBiasFile = %(PIPE_ROOT)s/design/instructions/LCA_bias_AA_per_residue.json
+
+# === Rosetta Settings ===
+# Template submit script (will be auto-configured)
+RosettaScript = %(PIPE_ROOT)s/design/instructions/submit_pyrosetta_general_threading_relax.sh
+
+# Relax script (called by submit script)
+RosettaRelaxPy = %(PIPE_ROOT)s/design/instructions/general_relax.py
+
+# Ligand params file (REQUIRED - update with your ligand)
+LigandParams = %(CAMPAIGN_ROOT)s/conformers/0/0.params
+
+# === Filtering Settings ===
+# Filter script
+FilterScript = %(PIPE_ROOT)s/design/instructions/relax_2_filter__allpolar_unsats.py
+
+# How many final designs to keep after filtering
+FilterTargetN = 1000
+
+# Maximum buried unsatisfied polars allowed
+FilterMaxUnsats = 1
+
+# Maximum designs per parent docking pose (for diversity)
+FilterMaxPerParent = 20
+
+# Optional: Ignore specific polar contact requirements
+# Set to True to skip checking O1/O2 polar contacts or charge satisfaction
+FilterIgnoreO1 = False
+FilterIgnoreO2 = False
+FilterIgnoreCharge = False
+
+# === AF3 Preparation ===
+# Template JSON files (must have ligand SMILES field)
+AF3BinaryTemplate = %(PIPE_ROOT)s/design/templates/pyr1_binary_template.json
+AF3TernaryTemplate = %(PIPE_ROOT)s/design/templates/pyr1_ternary_template.json
+
+# Ligand SDF for SMILES extraction (optional - can also manually specify SMILES)
+# If specified, SMILES will be auto-extracted and inserted into templates
+LigandSDF = %(CAMPAIGN_ROOT)s/conformers/0/0.sdf
+
+# === Helper Scripts (usually don't need to change) ===
+AggregateScoresScript = %(PIPE_ROOT)s/design/instructions/aggregate_scores.py
+SplitToFastaScript = %(PIPE_ROOT)s/design/instructions/split_and_mutate_to_fasta.py
+MakeAF3JSONsScript = %(PIPE_ROOT)s/design/instructions/make_af3_jsons.py
+
+
+# =============================================================================
+# Example Full Config File Structure
+# =============================================================================
+# Your complete config.txt should look like:
+#
+# [DEFAULT]
+# PIPE_ROOT = /projects/youruser/pyr1_pipeline
+# CAMPAIGN_ROOT = /projects/youruser/xanthurenic_acid
+# SCRATCH_ROOT = /scratch/youruser/xan_design
+#
+# [create_table]
+# MoleculeSDFs = %(CAMPAIGN_ROOT)s/conformers/*.sdf
+# # ... other docking settings ...
+#
+# [grade_conformers]
+# OutputDir = %(SCRATCH_ROOT)s/docked
+# # ... other docking settings ...
+#
+# [design]
+# # ... design settings from above ...
+#
+# =============================================================================

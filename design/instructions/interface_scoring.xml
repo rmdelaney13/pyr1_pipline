@@ -1,0 +1,43 @@
+<ROSETTASCRIPTS>
+  <SCOREFXNS>
+    <ScoreFunction name="sfxn" weights="beta_nov16"/>
+  </SCOREFXNS>
+
+  <RESIDUE_SELECTORS>
+    <Chain chains="A" name="chainA"/>
+    <Chain chains="C" name="chainC"/>
+    <Chain chains="D" name="chainD"/>
+    <Chain chains="B" name="ligand"/>
+    <Or name="receptor_all" selectors="chainA,chainC,chainD"/>
+    <Neighborhood name="interface" selector="ligand" distance="8.0" include_focus_in_subset="false"/>
+  </RESIDUE_SELECTORS>
+
+  <MOVERS>
+    <InterfaceScoreCalculator name="ligand_interface_score"
+                              chains="B"
+			      scorefxn="sfxn"/>
+ 
+    <InterfaceAnalyzerMover name="interface_analyzer"
+                            scorefxn="sfxn"
+                            fixedchains="A,C,D"
+                            interface_sc="true"/>
+ 
+
+  </MOVERS>
+
+  <FILTERS>
+    <ContactMolecularSurface name="cms_interface"
+                             binder_selector="receptor_all"
+                             target_selector="ligand"
+                             distance_weight="0.5"
+                             use_rosetta_radii="1"/>
+  </FILTERS>
+
+  <PROTOCOLS>
+    <Add mover="ligand_interface_score"/>
+    <Add mover="interface_analyzer"/> 
+    <Add filter="cms_interface"/>
+  </PROTOCOLS>
+
+  <OUTPUT scorefxn="sfxn"/>
+</ROSETTASCRIPTS>

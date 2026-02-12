@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Claude Code
+.claude/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# PyRosetta/Output files
+*.out
+*.err
+*.log
+
+# Large data files
+*.pdb
+*.sdf
+*.params
+*.cif
+
+# Scores and results
+*.sc
+*.csv
+*.fasta
+
+# SLURM logs
+slurm-*.out
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

@@ -1,4 +1,23 @@
 #!/usr/bin/env python
+"""
+Sequence-CSV-based docking with H-bond geometry constraints.
+
+Threads protein sequences from a CSV file onto specified positions and performs
+docking with the same rigorous water H-bond geometry filters as the glycine-shaved pipeline.
+
+CSV Format:
+    name,signature
+    seq1,QILMVAGDHVXXXXXX
+    seq2,AILVMQGDHVYYYYYY
+
+Usage:
+    # Single sequence (row 0)
+    python grade_conformers_sequence_csv_docking_multiple_slurm.py config.txt 0
+
+    # SLURM array (one job per sequence)
+    sbatch --array=0-N grade_conformers_sequence_csv_docking_multiple_slurm.py config.txt $SLURM_ARRAY_TASK_ID
+"""
+
 import argparse
 import json
 import os
@@ -48,6 +67,45 @@ def _cfg_bool(section, key, default):
     if cleaned == "":
         return bool(default)
     return cleaned in {"1", "true", "yes", "on"}
+
+
+def load_sequence_from_csv(csv_path, array_index):
+    """
+    Load a specific sequence from CSV by array index.
+
+    Returns:
+        tuple: (sequence_name, signature_string, positions_list)
+    """
+    df = pd.read_csv(csv_path)
+
+    if array_index >= len(df):
+        raise ValueError(
+            f"Array index {array_index} out of range. CSV has {len(df)} sequences (0-{len(df)-1})"
+        )
+
+    row = df.iloc[array_index]
+    seq_name = str(row["name"]).strip()
+    signature = str(row["signature"]).strip()
+
+    logger.info(f"Loaded sequence {array_index}: name='{seq_name}', signature='{signature}'")
+    return seq_name, signature
+
+
+def validate_signature(signature, positions):
+    """Validate that signature length matches positions."""
+    if len(signature) != len(positions):
+        raise ValueError(
+            f"Signature length ({len(signature)}) does not match positions count ({len(positions)}). "
+            f"Expected {len(positions)} amino acids."
+        )
+
+    valid_aa = set("ACDEFGHIKLMNPQRSTVWY")
+    for i, aa in enumerate(signature):
+        if aa.upper() not in valid_aa:
+            raise ValueError(
+                f"Invalid amino acid '{aa}' at position {i} in signature. "
+                f"Must be one of: {' '.join(sorted(valid_aa))}"
+            )
 
 
 def csv_to_df_pkl(csv_file_name, pkl_file_name, auto, path_to_conformers, pose, target_res, lig_res_num):
@@ -648,9 +706,8 @@ def align_to_residue_and_check_collision(
 
         if output_dirs:
             pass_idx = output_dirs["current_pass"]
-            array_index = output_dirs["array_index"]
             rotated_dir = output_dirs["rotated_dirs"][pass_idx]
-            rotated_path = os.path.join(rotated_dir, f"rotated_{array_index}_{total_confs}.pdb")
+            rotated_path = os.path.join(rotated_dir, f"rotated_{total_confs}.pdb")
         else:
             rotated_path = os.path.join("rotated", f"rotated_{total_confs}.pdb")
         dpu.dump_pose_pdb(copy_pose, rotated_path, rename_water=rename_water_to_tp3)
@@ -781,10 +838,9 @@ def align_to_residue_and_check_collision(
             cluster_id = len(clusters) + 1
             if output_dirs:
                 pass_idx = output_dirs["current_pass"]
-                array_index = output_dirs["array_index"]
                 repacked_dir = output_dirs["pass_score_repacked_dirs"][pass_idx]
                 out_path = os.path.join(
-                    repacked_dir, f"repacked_{array_index}_cluster{cluster_id:04}.pdb"
+                    repacked_dir, f"repacked_cluster{cluster_id:04}.pdb"
                 )
             else:
                 out_path = os.path.join("pass_score_repacked", f"repacked_cluster{cluster_id:04}.pdb")
@@ -853,14 +909,13 @@ def align_to_residue_and_check_collision(
 
 
 def aggregate_pass_score_repacked(
-    pass_score_repacked_dirs, num_passes, output_base=None, final_dir_name="final_pass_score_repacked"
+    pass_score_repacked_dirs, num_passes, output_base=None, final_dir_name="clustered_final"
 ):
     """
     Aggregates all pass_score_repacked directories into one final directory.
     """
     if output_base:
-        parent = os.path.dirname(output_base.rstrip("/"))
-        final_dir = os.path.join(parent, final_dir_name)
+        final_dir = os.path.join(output_base, final_dir_name)
     else:
         final_dir = os.path.join(os.getcwd(), final_dir_name)
 
@@ -887,7 +942,7 @@ def aggregate_pass_score_repacked(
     return final_dir
 
 
-def write_summary_report(output_base, array_index, mode, pass_summaries, final_dir):
+def write_summary_report(output_base, seq_name, mode, pass_summaries, final_dir):
     final_unique_clustered_docks = 0
     if os.path.isdir(final_dir):
         final_unique_clustered_docks = len(
@@ -900,7 +955,7 @@ def write_summary_report(output_base, array_index, mode, pass_summaries, final_d
 
     report = {
         "mode": mode,
-        "array_index": array_index,
+        "sequence_name": seq_name,
         "num_passes": len(pass_summaries),
         "per_pass": pass_summaries,
         "totals": {
@@ -915,7 +970,7 @@ def write_summary_report(output_base, array_index, mode, pass_summaries, final_d
         "final_clustered_docks_dir": final_dir,
     }
 
-    report_path = os.path.join(output_base, f"summary_array{array_index}.json")
+    report_path = os.path.join(output_base, f"summary_{seq_name}.json")
     with open(report_path, "w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2)
 
@@ -928,20 +983,17 @@ def write_summary_report(output_base, array_index, mode, pass_summaries, final_d
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("config_file", help="Your config file", default="config.ini", nargs="?")
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=__doc__
+    )
+    parser.add_argument("config_file", help="Your config file", default="config.txt", nargs="?")
     parser.add_argument(
         "array_index",
         nargs="?",
         default=0,
         type=int,
-        help="SLURM array index (default=0)",
-    )
-    parser.add_argument(
-        "-c",
-        "--passes_collision_check",
-        help="Whether to only show ones that pass collision check (True/False)",
-        default="False",
+        help="SLURM array index (selects row from CSV, default=0)",
     )
     if len(argv) == 0:
         parser.print_help()
@@ -954,7 +1006,25 @@ def main(argv):
         config.read_file(handle)
     default = config["DEFAULT"]
     spec = config["grade_conformers"]
+
+    # Load sequence-specific config
+    seq_section = config["SEQUENCE_DOCKING"] if "SEQUENCE_DOCKING" in config else {}
     multiple = config["MULTIPLE_PASSES"] if "MULTIPLE_PASSES" in config else {}
+
+    # Load sequence from CSV
+    csv_path = seq_section.get("SequenceCSV", None)
+    if not csv_path:
+        raise ValueError("SequenceCSV must be specified in [SEQUENCE_DOCKING] section")
+
+    positions_str = seq_section.get("ThreadingPositions", None)
+    if not positions_str:
+        raise ValueError("ThreadingPositions must be specified in [SEQUENCE_DOCKING] section")
+
+    threading_positions = [int(x) for x in positions_str.split()]
+    seq_name, signature = load_sequence_from_csv(csv_path, array_index)
+    validate_signature(signature, threading_positions)
+
+    logger.info(f"Threading signature '{signature}' onto positions: {threading_positions}")
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     legacy_dir = os.path.normpath(os.path.join(script_dir, "..", "legacy"))
@@ -993,14 +1063,16 @@ def main(argv):
         pre_pose = pyrosetta.pose_from_pdb(default["PrePDBFileName"])
         post_pose = pyrosetta.pose_from_pdb(default["PostPDBFileName"])
 
-    positions = spec["GlycineShavePositions"].split()
-    pocket_shave_positions = [int(x) for x in positions]
-    for i in range(1, post_pose.total_residue() + 1):
-        if i in pocket_shave_positions:
-            pyrosetta.toolbox.mutate_residue(post_pose, i, "G")
+    # Thread the sequence onto specified positions
+    logger.info("Threading sequence onto pose...")
+    for pos, aa in zip(threading_positions, signature):
+        logger.info(f"  Position {pos} -> {aa}")
+        pyrosetta.toolbox.mutate_residue(post_pose, pos, aa.upper())
 
     rename_water_to_tp3 = dpu.cfg_getbool(config, "grade_conformers", "RenameWaterToTP3", True)
-    dpu.dump_pose_pdb(post_pose, "post_mutate.pdb", rename_water=rename_water_to_tp3)
+    post_mutate_path = f"post_mutate_{seq_name}.pdb"
+    dpu.dump_pose_pdb(post_pose, post_mutate_path, rename_water=rename_water_to_tp3)
+    logger.info(f"Saved threaded pose: {post_mutate_path}")
 
     target_res_num = _cfg_int(default, "ResidueNumber", 1)
     chain_letter = default["ChainLetter"]
@@ -1086,17 +1158,19 @@ def main(argv):
         print(f"Generated and loaded {pkl_file_name}")
 
     num_passes = multiple.getint("NumPasses", fallback=1)
-    output_base = multiple.get("OutputDirBase", fallback=os.getcwd())
+
+    # Option C: {OutputDirBase}/sequences/{seq_name}/
+    base_output_dir = multiple.get("OutputDirBase", fallback=os.getcwd())
+    output_base = os.path.join(base_output_dir, "sequences", seq_name)
     os.makedirs(output_base, exist_ok=True)
+    logger.info(f"Sequence output directory: {output_base}")
 
     rotated_dirs = []
     pass_score_repacked_dirs = []
 
     for pass_idx in range(1, num_passes + 1):
-        rotated_dir = os.path.join(output_base, f"rotated_{array_index}_{pass_idx}")
-        pass_score_repacked_dir = os.path.join(
-            output_base, f"pass_score_repacked_{array_index}_{pass_idx}"
-        )
+        rotated_dir = os.path.join(output_base, f"rotated_pass{pass_idx}")
+        pass_score_repacked_dir = os.path.join(output_base, f"pass_score_repacked_pass{pass_idx}")
         os.makedirs(rotated_dir, exist_ok=True)
         os.makedirs(pass_score_repacked_dir, exist_ok=True)
         rotated_dirs.append(rotated_dir)
@@ -1106,13 +1180,12 @@ def main(argv):
         "current_pass": None,
         "rotated_dirs": rotated_dirs,
         "pass_score_repacked_dirs": pass_score_repacked_dirs,
-        "array_index": array_index,
     }
 
     combined_df = pd.DataFrame()
     pass_summaries = []
     for pass_idx in range(1, num_passes + 1):
-        print(f"\n--- Starting Pass {pass_idx} ---")
+        print(f"\n--- Starting Pass {pass_idx} for sequence '{seq_name}' ---")
         output_dirs["current_pass"] = pass_idx - 1
         pass_stats = align_to_residue_and_check_collision(
             pose=post_pose,
@@ -1159,31 +1232,29 @@ def main(argv):
             slow_min_threshold_sec=slow_min_threshold_sec,
             geometry_csv_path=os.path.join(
                 output_base,
-                f"hbond_geometry_array{array_index}_pass{pass_idx}.csv",
+                f"hbond_geometry_pass{pass_idx}.csv",
             ),
             cluster_enabled=cluster_enabled,
             cluster_rmsd_cutoff=cluster_rmsd_cutoff,
         )
         pass_stats["pass_index"] = pass_idx
         pass_summaries.append(pass_stats)
-        try:
-            pass_df = pd.read_pickle(pkl_file_name)
-            combined_df = pd.concat([combined_df, pass_df], ignore_index=True)
-            print(f"Pass {pass_idx} DataFrame loaded and merged.")
-        except Exception as e:
-            print(f"Error loading pickle file for pass {pass_idx}: {e}")
 
     final_dir = aggregate_pass_score_repacked(
         pass_score_repacked_dirs,
         num_passes,
         output_base=output_base,
-        final_dir_name="final_pass_score_repacked",
+        final_dir_name="clustered_final",
     )
-    write_summary_report(output_base, array_index, "glycine", pass_summaries, final_dir)
+    write_summary_report(output_base, seq_name, "sequence", pass_summaries, final_dir)
 
-    combined_pkl = "combined_" + pkl_file_name if pkl_file_name else "combined_results.pkl"
-    combined_df.to_pickle(combined_pkl, protocol=4)
-    print(f"\nAll passes completed. Combined results saved to {combined_pkl}")
+    print(f"\n{'='*80}")
+    print(f"SEQUENCE '{seq_name}' DOCKING COMPLETE")
+    print(f"{'='*80}")
+    print(f"Signature: {signature}")
+    print(f"Positions: {threading_positions}")
+    print(f"Output: {output_base}")
+    print(f"Clustered docks: {final_dir}")
 
 
 if __name__ == "__main__":

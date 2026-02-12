@@ -7,17 +7,17 @@
 PIPE_ROOT = /projects/ryde3462/software/pyr1_pipeline
 
 # Where your campaign inputs/outputs live (scratch or project space)
-CAMPAIGN_ROOT = /projects/ryde3462/kyna_test
+CAMPAIGN_ROOT = /projects/ryde3462/sequence_docking_campaign
 
 # High-IO / large outputs (always on scratch)
-SCRATCH_ROOT = /scratch/alpine/ryde3462/kyna_test
+SCRATCH_ROOT = /scratch/alpine/ryde3462/sequence_docking_campaign
 
 # Rosetta install (only needed if some scripts call it)
 PathToRosetta = /projects/ryde3462/software/rosetta_bin_linux_2021.16.61629_bundle
 
 # Recommended: run in a conda env that already has pyrosetta, and leave this blank.
 # If you MUST use it, point to the *site-packages* that contains pyrosetta/.
-PathToPyrosetta = /projects/ryde3462/software/PyRosetta4.Debug.python38.linux.release-375
+PathToPyRosetta = /projects/ryde3462/software/PyRosetta4.Debug.python38.linux.release-375
 
 # =========================
 # TEMPLATE / TARGET DEFINITIONS (rarely change)
@@ -41,11 +41,32 @@ LigandResidueNumber = 1
 PathToConformers = %(CAMPAIGN_ROOT)s/conformers_deprot
 
 # Shared table paths used by downstream grading scripts
-CSVFileName = kyna_ligands.csv
-PKLFileName = kyna_ligands.pkl
+CSVFileName = ligands.csv
+PKLFileName = ligands.pkl
 
 # Usually keep False; auto-alignment is slow and can be brittle
 AutoGenerateAlignment = False
+
+
+[SEQUENCE_DOCKING]
+# =========================
+# SEQUENCE THREADING (CSV-based)
+# =========================
+
+# Path to CSV with sequence signatures
+# Format: name,signature
+# Example:
+#   seq1,QILMVAGDHVXXXXXX
+#   seq2,AILVMQGDHVYYYYYY
+SequenceCSV = %(CAMPAIGN_ROOT)s/sequences.csv
+
+# Positions to thread signature onto (space-separated, must match signature length)
+# For PYR1 pocket (16 positions):
+ThreadingPositions = 59 79 81 90 92 106 108 115 118 120 139 157 158 161 162 165
+
+# Keep intermediate outputs for inspection?
+# If True, keeps rotated/ and pass_score_repacked_passN/ dirs in addition to clustered_final/
+KeepIntermediateOutputs = True
 
 
 [MULTIPLE_PASSES]
@@ -56,9 +77,8 @@ AutoGenerateAlignment = False
 # Number of independent sampling passes (often 1 if you use SLURM arrays)
 NumPasses = 1
 
-
-
-# Base directory for outputs (each array index creates its own subdirs)
+# Base directory for outputs (each sequence creates its own subdirs)
+# Outputs will be organized as: %(SCRATCH_ROOT)s/pass_output/sequences/{seq_name}/clustered_final/
 OutputDirBase = %(SCRATCH_ROOT)s/pass_output
 
 
@@ -68,14 +88,14 @@ OutputDirBase = %(SCRATCH_ROOT)s/pass_output
 # =========================
 
 # Input SDF(s): wildcard allowed
-MoleculeSDFs = %(CAMPAIGN_ROOT)s/conformers_deprot/kyna_conf.sdf
+MoleculeSDFs = %(CAMPAIGN_ROOT)s/conformers_deprot/*.sdf
 
 AcceptorMode=generic
 DynamicAlignmentDebug = True
 
 # Output table names (written in the working directory you run from)
-CSVFileName = %(CAMPAIGN_ROOT)s/kyna_ligands.csv
-PKLFileName = %(CAMPAIGN_ROOT)s/kyna_ligands.pkl
+CSVFileName = %(CAMPAIGN_ROOT)s/ligands.csv
+PKLFileName = %(CAMPAIGN_ROOT)s/ligands.pkl
 
 UseMoleculeID = False
 NoName = True
@@ -99,7 +119,7 @@ TargetAtomTriplets = O2-C11-C9; O2-C9-C11
 DebugEveryN = 25
 SlowMinimizationSeconds = 5.0
 
-# Output location
+# Output location (NOTE: for sequence docking, outputs go to sequences/{seq_name}/ subdirs)
 OutputDir = %(SCRATCH_ROOT)s/docked
 
 # Collision grid
@@ -111,68 +131,60 @@ IncludeSC = True
 JumpNum = 2
 Rotation = 25
 Translation = 0.5
-MaxPerturbTries = 5
+MaxPerturbTries = 30
 
-# One set of H-bond controls
+# H-bond geometry filtering (CRITICAL for water-mediated binding)
 EnableHBondGeometryFilter = True
 UseClosestLigandAcceptor = True
 
-# loose capture
+# Loose capture window during sampling
 HBondDistanceIdeal = 2.8
 HBondDistanceIdealBuffer = 0.8
 HBondDonorAngleMin = 120
+HBondAcceptorAngleMin = 90
+HBondQualityMin = 0.25
 
-# strong pull during minimization
+# Strong pull during minimization (guides ligand to water)
 HBondConstraintWeight = 4.0
 EnableDynamicWaterPullConstraint = True
 HBondConstraintSD = 0.25
 HBondConstraintCaptureMax = 8.0
 
-# strict final outputs
+# Strict final geometry enforcement
 EnforceFinalIdealGeometry = True
 HBondDonorAngleIdeal = 180
 HBondDonorAngleBuffer = 40
+HBondAcceptorAngleIdeal = 180
+HBondAcceptorAngleBuffer = 30
 RequireAcceptorIdealWindow = False
 
 # Keep these sidechains when building backbone-only collision grid
+# (typically conserved residues or those defining pocket shape)
 BackboneClashKeepSidechains = 86 113 114
 
-# Score cutoff for pass
+# Score cutoff for accepting docked poses
 MaxScore = -300
 
-# Mutations applied to PostPDBFileName
-MutatePositions = 59 79 81 90 92 106 108 118 120 139 157 158
-MutateAA        = Q  I  L  M  V  A  G  D  H  V
-
-# Glycine shave positions
-GlycineShavePositions = 59 79 81 90 92 106 108 115 118 120 139 157 158 161 162 165
-
-
 # =========================
-# SLURM ARRAY & CLUSTERING
+# CLUSTERING
 # =========================
 
-# Total number of array tasks (1 = no array, >1 = split work across N tasks)
-# Set this when submitting with: sbatch --array=0-N config.txt
-ArrayTaskCount = 1
-
-# Enable per-array-task clustering (typically False for arrays, True for single jobs)
-# When False, each array task writes all passing poses to OutputDir
-# After array completes, run cluster_docked_post_array.py for global clustering
-EnablePoseClusteringInArrayTask = False
+# Enable per-pass clustering (reduces redundant outputs)
+EnablePoseClusteringInArrayTask = True
+EnablePoseClustering = True
 
 # RMSD cutoff (Angstroms) for ligand heavy-atom clustering
-# Used by both in-array clustering and post-array clustering script
 ClusterRMSDCutoff = 0.75
 
-# Output directory for final clustered results (written by cluster_docked_post_array.py)
-# If not set, defaults to OutputDir/clustered_final (where OutputDir is defined above at line ~103)
+# Output directory for final clustered results
+# For sequence docking, this becomes: {OutputDirBase}/sequences/{seq_name}/clustered_final/
 ClusteredOutputDir =
 
-# Name pattern for geometry summary CSV files written by each array task
-# Array tasks append _arrayXXXX.csv automatically
+# Name pattern for geometry summary CSV files
 GeometryCSVName = hbond_geometry_summary.csv
 
-# Prefix for output PDB files from array tasks (e.g., a0001_rep_1.pdb)
-# Useful for distinguishing array task outputs when clustering
+# Prefix for output PDB files
 OutputPrefix =
+
+# Rename waters to TP3 format (for CHARMM compatibility)
+RenameWaterToTP3 = True
