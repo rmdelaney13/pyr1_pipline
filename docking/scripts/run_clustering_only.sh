@@ -2,6 +2,9 @@
 #SBATCH --job-name=cluster_docks
 #SBATCH --output=clustering_%j.out
 #SBATCH --error=clustering_%j.err
+#SBATCH --partition=amilan
+#SBATCH --qos=normal
+#SBATCH --account=ucb472_asc2
 #SBATCH --time=2:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1

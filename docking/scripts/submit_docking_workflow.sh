@@ -2,6 +2,9 @@
 #SBATCH --job-name=docking_workflow
 #SBATCH --output=docking_%A_%a.out
 #SBATCH --error=docking_%A_%a.err
+#SBATCH --partition=amilan
+#SBATCH --qos=normal
+#SBATCH --account=ucb472_asc2
 #SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
