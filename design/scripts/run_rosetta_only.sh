@@ -33,6 +33,7 @@ fi
 
 TEMPLATE_DIR="$(realpath "$1")"
 MPNN_OUTPUT_DIR="$(realpath "$2")"
+mkdir -p "$3"
 OUTPUT_DIR="$(realpath "$3")"
 LIGAND_PARAMS="$(realpath "$4")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,12 +104,20 @@ sed -i "s|^OUTPUT_DIR=.*|OUTPUT_DIR=\"$OUTPUT_DIR\"|" "$ROSETTA_CUSTOM"
 sed -i "s|^LIGAND_PARAMS=.*|LIGAND_PARAMS=\"$LIGAND_PARAMS\"|" "$ROSETTA_CUSTOM"
 sed -i "s|#SBATCH --array=1-.*|#SBATCH --array=1-$ARRAY_COUNT|" "$ROSETTA_CUSTOM"
 
+# Send logs to a logs subdirectory within the output dir
+LOG_DIR="$OUTPUT_DIR/logs"
+mkdir -p "$LOG_DIR"
+
 echo "✓ Created custom Rosetta script: $ROSETTA_CUSTOM"
+echo "Log directory: $LOG_DIR"
 echo ""
 echo "Submitting to SLURM..."
 
-# Submit to SLURM
-JOB_ID=$(sbatch --parsable "$ROSETTA_CUSTOM")
+# Submit to SLURM, overriding output/error to go to logs dir
+JOB_ID=$(sbatch --parsable \
+    --output="${LOG_DIR}/thread_relax_%A_%a.out" \
+    --error="${LOG_DIR}/thread_relax_%A_%a.err" \
+    "$ROSETTA_CUSTOM")
 
 if [ -z "$JOB_ID" ]; then
     echo "ERROR: Failed to submit Rosetta job"
