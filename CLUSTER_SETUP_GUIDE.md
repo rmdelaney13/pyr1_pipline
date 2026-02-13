@@ -88,7 +88,7 @@ Test docking locally before submitting SLURM jobs.
 cd /projects/ryde3462/kyna_test
 
 # Run array index 0 locally (no SLURM)
-python /projects/ryde3462/software/pyr1_pipeline/docking/scripts/grade_conformers_glycine_shaved_docking_multiple_slurm.py config.txt 0
+python /projects/ryde3462/software/pyr1_pipeline/docking/scripts/grade_conformers_glycine_shaved.py config.txt 0
 ```
 
 **Expected output:**
@@ -270,7 +270,7 @@ After each step, verify:
 # Test locally (no SLURM)
 cd /projects/ryde3462/kyna_test
 python /projects/ryde3462/software/pyr1_pipeline/docking/scripts/create_table.py config.txt
-python /projects/ryde3462/software/pyr1_pipeline/docking/scripts/grade_conformers_glycine_shaved_docking_multiple_slurm.py config.txt 0
+python /projects/ryde3462/software/pyr1_pipeline/docking/scripts/grade_conformers_glycine_shaved.py config.txt 0
 
 # Submit full workflow via SLURM
 bash /projects/ryde3462/software/pyr1_pipeline/docking/scripts/submit_complete_workflow.sh config.txt

@@ -83,7 +83,7 @@ def run_docking_array_task(config_file, array_index, mode="glycine"):
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     script_map = {
-        "glycine": "grade_conformers_glycine_shaved_docking_multiple_slurm.py",
+        "glycine": "grade_conformers_glycine_shaved.py",
         "sequence": "grade_conformers_docked_to_sequence_multiple_slurm1.py",
     }
 

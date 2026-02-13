@@ -277,7 +277,7 @@ MakeAF3JSONsScript = /projects/ryde3462/software/LigandMPNN/ligand_alignment_mpn
 #    python /projects/ryde3462/software/pyr1_pipeline/docking/scripts/create_table.py config.txt
 #
 # 2. Test single docking (array index 0):
-#    python /projects/ryde3462/software/pyr1_pipeline/docking/scripts/grade_conformers_glycine_shaved_docking_multiple_slurm.py config.txt 0
+#    python /projects/ryde3462/software/pyr1_pipeline/docking/scripts/grade_conformers_glycine_shaved.py config.txt 0
 #
 # 3. Test clustering:
 #    python /projects/ryde3462/software/pyr1_pipeline/docking/scripts/cluster_docked_post_array.py config.txt
