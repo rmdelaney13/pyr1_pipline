@@ -133,19 +133,27 @@ tail -f /scratch/alpine/ryde3462/kyna_test/logs/clustering_*.out
 
 ### 6. Run Everything: SDF → Docking → Design → AF3 (Recommended)
 
-Submit the full pipeline as a SLURM orchestrator job. This survives SSH
-disconnects and cluster timeouts — you can log out and check back later.
+The pipeline runs in 3 phases. Phase 1 uses a SLURM orchestrator job so it
+survives SSH disconnects. Phases 2 and 3 are quick commands you run from a
+login node after each phase completes.
+
+#### Phase 1: Docking → AF3 Prep (~4 hours, submit-and-forget)
+
+This submits a lightweight orchestrator SLURM job (1 CPU, 4GB) that
+automatically chains: docking arrays → clustering → MPNN → Rosetta → filter →
+FASTA → AF3 JSON prep. It stops before submitting AF3 GPU jobs so it doesn't
+hold a CPU node while waiting on GPU queue.
 
 ```bash
 cd /projects/ryde3462/kyna_test
+PIPE=/projects/ryde3462/software/pyr1_pipeline
 
-# Full pipeline: Docking → Design → AF3 (submitted as SLURM job)
-bash /projects/ryde3462/software/pyr1_pipeline/docking/scripts/submit_full_pipeline.sh config.txt
+# Full pipeline through AF3 prep (stops before GPU submission)
+bash $PIPE/docking/scripts/submit_full_pipeline.sh config.txt \
+  --design-args "--skip-af3-submit --skip-af3-analyze"
 ```
 
-This submits a lightweight orchestrator job (1 CPU, 4GB) that runs for up to
-7 days. It spawns docking array jobs, waits for them, then runs the design
-pipeline (MPNN → Rosetta → filter → AF3), all automatically.
+You can log out after this. The orchestrator runs inside SLURM.
 
 **Monitor progress:**
 ```bash
@@ -159,44 +167,44 @@ cat /scratch/alpine/ryde3462/kyna_test/logs/pipeline_status.log
 squeue -u ryde3462
 ```
 
-**Options:**
-```bash
-# Design only (docking already done)
-bash submit_full_pipeline.sh config.txt --design-only
+#### Phase 2: Submit AF3 GPU Jobs (seconds, from login node)
 
-# Docking only (skip design)
-bash submit_full_pipeline.sh config.txt --docking-only
-
-# Pass extra flags to the design pipeline
-bash submit_full_pipeline.sh config.txt --design-args "--rosetta-to-af3"
-bash submit_full_pipeline.sh config.txt --design-args "--af3-analyze-only"
-```
-
-#### Alternative: Interactive Mode (requires active session)
-
-If you want to watch the pipeline live (e.g., in a `screen` or `tmux` session),
-you can still use the old interactive chaining approach:
+Once Phase 1 finishes (check `pipeline_status.log` or `squeue`), submit the
+AF3 GPU jobs. This takes seconds — no orchestrator needed:
 
 ```bash
 cd /projects/ryde3462/kyna_test
-
-# Full pipeline: Docking (wait) → Design → AF3 (wait)
-python /projects/ryde3462/software/pyr1_pipeline/docking/scripts/run_docking_workflow.py config.txt --slurm --wait && \
-python /projects/ryde3462/software/pyr1_pipeline/design/scripts/run_design_pipeline.py config.txt --wait
+python $PIPE/design/scripts/run_design_pipeline.py config.txt --af3-submit-only
 ```
 
-**WARNING:** This requires your session to stay alive. If your SSH connection
-drops or you get timed out, the orchestration stops (SLURM jobs already
-submitted will finish, but the next stage won't start). Use the SLURM
-submission method above to avoid this.
+GPU jobs go into the SLURM queue on their own. Wait time depends on GPU
+availability — check `squeue -u ryde3462` periodically.
 
-**Or run just the design pipeline** (if docking is already done):
+#### Phase 3: Analyze AF3 Results (after GPU jobs finish)
+
+Once all AF3 GPU jobs have completed:
 
 ```bash
 cd /projects/ryde3462/kyna_test
+python $PIPE/design/scripts/run_design_pipeline.py config.txt --af3-analyze-only
+```
 
-# Design only: MPNN → Rosetta → Filter → FASTA → AF3 prep → AF3 submit → AF3 analyze
-python /projects/ryde3462/software/pyr1_pipeline/design/scripts/run_design_pipeline.py config.txt --wait
+This extracts pLDDT, ipTM, ligand RMSD, and filters by quality cutoffs.
+Final results land in `/scratch/.../design/af3_analysis/filtered_metrics.csv`.
+
+#### Other Orchestrator Options
+
+```bash
+# Design only (docking already done), through AF3 prep
+bash $PIPE/docking/scripts/submit_full_pipeline.sh config.txt \
+  --design-only --design-args "--skip-af3-submit --skip-af3-analyze"
+
+# Docking only (skip design entirely)
+bash $PIPE/docking/scripts/submit_full_pipeline.sh config.txt --docking-only
+
+# Jump from existing Rosetta output to AF3 prep
+bash $PIPE/docking/scripts/submit_full_pipeline.sh config.txt \
+  --design-only --design-args "--rosetta-to-af3 --skip-af3-submit --skip-af3-analyze"
 ```
 
 The `--wait` flag tells the pipeline to poll SLURM and wait for each batch of jobs
@@ -425,28 +433,31 @@ After each step, verify:
 cd /projects/ryde3462/kyna_test
 PIPE=/projects/ryde3462/software/pyr1_pipeline
 
-# --- FULL PIPELINE (submit-and-forget, survives disconnects) ---
+# --- PHASE 1: Docking → AF3 Prep (submit-and-forget, ~4 hours) ---
 
-bash $PIPE/docking/scripts/submit_full_pipeline.sh config.txt
+bash $PIPE/docking/scripts/submit_full_pipeline.sh config.txt \
+  --design-args "--skip-af3-submit --skip-af3-analyze"
 
 # Design only (docking already done)
-bash $PIPE/docking/scripts/submit_full_pipeline.sh config.txt --design-only
+bash $PIPE/docking/scripts/submit_full_pipeline.sh config.txt \
+  --design-only --design-args "--skip-af3-submit --skip-af3-analyze"
 
 # Docking only
 bash $PIPE/docking/scripts/submit_full_pipeline.sh config.txt --docking-only
 
-# With extra design flags
-bash $PIPE/docking/scripts/submit_full_pipeline.sh config.txt --design-args "--rosetta-to-af3"
+# --- PHASE 2: Submit AF3 GPU Jobs (from login node, takes seconds) ---
+
+python $PIPE/design/scripts/run_design_pipeline.py config.txt --af3-submit-only
+
+# --- PHASE 3: Analyze AF3 Results (after GPU jobs finish) ---
+
+python $PIPE/design/scripts/run_design_pipeline.py config.txt --af3-analyze-only
 
 # --- MONITORING ---
 
 tail -f /scratch/alpine/ryde3462/kyna_test/logs/pipeline_orchestrator_*.out
 cat /scratch/alpine/ryde3462/kyna_test/logs/pipeline_status.log
-
-# --- INTERACTIVE (requires active session / tmux / screen) ---
-
-python $PIPE/docking/scripts/run_docking_workflow.py config.txt --slurm --wait && \
-python $PIPE/design/scripts/run_design_pipeline.py config.txt --wait
+squeue -u ryde3462
 
 # --- DOCKING ONLY ---
 
