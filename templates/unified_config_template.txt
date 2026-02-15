@@ -275,6 +275,44 @@ LigandSDF = %(CAMPAIGN_ROOT)s/conformers/0/0.sdf
 
 
 # =============================================================================
+# AF3 SUBMISSION SETTINGS
+# =============================================================================
+# These control how AF3 GPU inference jobs are batched and submitted to SLURM.
+# Only used when --skip-af3-submit is NOT passed.
+
+# Number of JSON files per batch directory (default: 60)
+# Each batch becomes one SLURM array task running on one GPU
+AF3BatchSize = 60
+
+# SLURM partition for GPU jobs
+AF3Partition = aa100
+
+# Wall clock time limit per array task (HH:MM:SS)
+# 1 hour is usually sufficient for ~60 binary or ~60 ternary JSONs
+AF3TimeLimit = 01:00:00
+
+# SLURM account for job billing
+AF3Account = ucb472_asc2
+
+# Quality of service
+AF3QOS = normal
+
+# Number of tasks per node
+AF3NTasks = 10
+
+# Path to AlphaFold3 model parameters
+AF3ModelParamsDir = /projects/ryde3462/software/af3
+
+# Whether to run the data pipeline (MSA generation)
+# Set to 'false' when using pre-computed template data (most common)
+# Set to 'true' only when running from scratch without templates
+AF3RunDataPipeline = false
+
+# Prefix for SLURM job names (will be suffixed with _binary or _ternary)
+AF3JobNamePrefix = af3
+
+
+# =============================================================================
 # HELPER SCRIPT PATHS (Usually don't need to change)
 # =============================================================================
 

@@ -228,7 +228,7 @@ LigandParams = %(CAMPAIGN_ROOT)s/conformers/0/0.params
 # =============================================================================
 
 # Filter script (using kyna-specific version)
-FilterScript = %(PIPE_ROOT)s/design/instructions/relax_2_filter__allpolar_unsats_kyna.py
+FilterScript = %(PIPE_ROOT)s/design/instructions/relax_2_filter__allpolar_unsats.py
 
 # Filtering thresholds
 FilterTargetN = 100              # Smaller for testing
@@ -254,6 +254,22 @@ LigandSMILES = OC(=O)c1cc(O)c2ccccc2n1
 
 # Ligand SDF for SMILES extraction (fallback if LigandSMILES not set)
 LigandSDF = %(CAMPAIGN_ROOT)s/conformers/0/0.sdf
+
+
+# =============================================================================
+# AF3 SUBMISSION SETTINGS
+# =============================================================================
+
+# Batch and SLURM settings for AF3 GPU inference
+AF3BatchSize = 60
+AF3Partition = aa100
+AF3TimeLimit = 01:00:00
+AF3Account = ucb472_asc2
+AF3QOS = normal
+AF3NTasks = 10
+AF3ModelParamsDir = /projects/ryde3462/software/af3
+AF3RunDataPipeline = false
+AF3JobNamePrefix = kyna_af3
 
 
 # =============================================================================
