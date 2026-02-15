@@ -329,6 +329,8 @@ AF3RefModel = /projects/ryde3462/software/LigandMPNN/ligand_alignment_mpnn/scrip
 # Quality cutoffs - designs must pass BOTH in BOTH binary and ternary
 AF3PLDDTCutoff = 60             # Minimum ligand pLDDT score
 AF3IPTMCutoff = 0.65            # Minimum ligand ipTM score
+AF3DistCutoff = 3.0             # Max distance (A) from ref atom to closest ligand oxygen
+AF3LigandRMSDCutoff = 2.0      # Max ligand RMSD (A) between binary and ternary models
 
 # Ligand chain/residue in AF3 output structures
 AF3LigandChain = B

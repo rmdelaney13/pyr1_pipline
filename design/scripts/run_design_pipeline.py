@@ -149,6 +149,8 @@ class DesignPipelineConfig:
             self.af3_ref_model = Path(self.af3_ref_model)
         self.af3_plddt_cutoff = float(self._get('design', 'AF3PLDDTCutoff', '60'))
         self.af3_iptm_cutoff = float(self._get('design', 'AF3IPTMCutoff', '0.65'))
+        self.af3_dist_cutoff = float(self._get('design', 'AF3DistCutoff', '3.0'))
+        self.af3_ligand_rmsd_cutoff = float(self._get('design', 'AF3LigandRMSDCutoff', '2.0'))
         self.af3_ligand_chain = self._get('design', 'AF3LigandChain', 'B')
         self.af3_ligand_res_id = int(self._get('design', 'AF3LigandResID', '1'))
         self.af3_ref_chain = self._get('design', 'AF3RefChain', 'A')
@@ -908,6 +910,8 @@ def filter_af3_results(cfg, master_csv):
     print(f"  Input: {master_csv}")
     print(f"  pLDDT cutoff: >= {cfg.af3_plddt_cutoff}")
     print(f"  ipTM cutoff:  >= {cfg.af3_iptm_cutoff}")
+    print(f"  Dist cutoff:  <= {cfg.af3_dist_cutoff} A")
+    print(f"  RMSD cutoff:  <= {cfg.af3_ligand_rmsd_cutoff} A")
 
     analysis_dir = cfg.design_root / "af3_analysis"
     filtered_csv = analysis_dir / "filtered_metrics.csv"
@@ -942,17 +946,39 @@ def filter_af3_results(cfg, master_csv):
             b_iptm = safe_float(row.get('binary_iptm'))
 
             # Both binary and ternary must pass cutoffs
-            if (t_plddt is not None and t_plddt >= cfg.af3_plddt_cutoff and
-                t_iptm is not None and t_iptm >= cfg.af3_iptm_cutoff and
-                b_plddt is not None and b_plddt >= cfg.af3_plddt_cutoff and
-                b_iptm is not None and b_iptm >= cfg.af3_iptm_cutoff):
-                passed.append(row)
+            if not (t_plddt is not None and t_plddt >= cfg.af3_plddt_cutoff and
+                    t_iptm is not None and t_iptm >= cfg.af3_iptm_cutoff and
+                    b_plddt is not None and b_plddt >= cfg.af3_plddt_cutoff and
+                    b_iptm is not None and b_iptm >= cfg.af3_iptm_cutoff):
+                continue
+
+            # Distance to closest oxygen must be within cutoff
+            t_dist = safe_float(row.get('ternary_dist'))
+            b_dist = safe_float(row.get('binary_dist'))
+            if t_dist is not None and t_dist > cfg.af3_dist_cutoff:
+                continue
+            if b_dist is not None and b_dist > cfg.af3_dist_cutoff:
+                continue
+
+            # Ligand RMSD between binary and ternary must be within cutoff
+            rmsd = safe_float(row.get('ligand_rmsd'))
+            if rmsd is not None and rmsd > cfg.af3_ligand_rmsd_cutoff:
+                continue
+
+            passed.append(row)
         else:
             plddt = safe_float(row.get('ligand_plddt'))
             iptm = safe_float(row.get('ligand_iptm'))
-            if (plddt is not None and plddt >= cfg.af3_plddt_cutoff and
-                iptm is not None and iptm >= cfg.af3_iptm_cutoff):
-                passed.append(row)
+            if not (plddt is not None and plddt >= cfg.af3_plddt_cutoff and
+                    iptm is not None and iptm >= cfg.af3_iptm_cutoff):
+                continue
+
+            # Distance check for single-mode
+            dist = safe_float(row.get('min_dist_to_ligand_O_aligned'))
+            if dist is not None and dist > cfg.af3_dist_cutoff:
+                continue
+
+            passed.append(row)
 
     print(f"  {len(passed)} / {len(rows)} designs passed filters")
 

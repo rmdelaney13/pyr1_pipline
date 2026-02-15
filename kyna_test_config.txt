@@ -282,6 +282,8 @@ AF3RefModel = /projects/ryde3462/software/LigandMPNN/ligand_alignment_mpnn/scrip
 # Quality cutoffs
 AF3PLDDTCutoff = 60
 AF3IPTMCutoff = 0.65
+AF3DistCutoff = 3.0
+AF3LigandRMSDCutoff = 2.0
 
 # Ligand and reference atom settings
 AF3LigandChain = B
