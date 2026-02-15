@@ -139,10 +139,10 @@ login node after each phase completes.
 
 #### Phase 1: Docking → AF3 Prep (~4 hours, submit-and-forget)
 
-This submits a lightweight orchestrator SLURM job (1 CPU, 4GB) that
-automatically chains: docking arrays → clustering → MPNN → Rosetta → filter →
-FASTA → AF3 JSON prep. It stops before submitting AF3 GPU jobs so it doesn't
-hold a CPU node while waiting on GPU queue.
+This submits a lightweight orchestrator SLURM job (1 CPU, 4GB, 8hr wall time)
+that automatically chains: docking arrays → clustering → MPNN → Rosetta →
+filter → FASTA → AF3 JSON prep. It stops before submitting AF3 GPU jobs so it
+doesn't hold a CPU node while waiting on GPU queue.
 
 ```bash
 cd /projects/ryde3462/kyna_test

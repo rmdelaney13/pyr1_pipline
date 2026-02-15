@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=pipeline_orchestrator
 #SBATCH --partition=amilan
-#SBATCH --qos=long
+#SBATCH --qos=normal
 #SBATCH --account=ucb472_asc2
-#SBATCH --time=7-00:00:00
+#SBATCH --time=08:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
