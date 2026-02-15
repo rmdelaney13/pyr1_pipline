@@ -9,21 +9,29 @@
 #SBATCH --mem=4G
 
 # ============================================================================
-# Full Pipeline Orchestrator: SDF → Docking → Design → AF3
+# Pipeline Orchestrator (Phase 1): SDF → Docking → Design → AF3 Prep
 # ============================================================================
 #
-# Submits the entire pipeline as a lightweight SLURM job so it survives SSH
-# disconnects. The orchestrator itself uses minimal resources (1 CPU, 4GB RAM)
-# while the real compute happens in the array jobs it spawns.
+# Submits a lightweight SLURM orchestrator job (1 CPU, 4GB, 8hr) that chains
+# docking through AF3 JSON prep. Survives SSH disconnects — submit and log out.
+# The real compute happens in array jobs it spawns (MPNN, Rosetta, docking).
 #
-# Usage:
-#   cd /projects/ryde3462/kyna_test
-#   bash /projects/ryde3462/software/pyr1_pipeline/docking/scripts/submit_full_pipeline.sh config.txt
+# Recommended 3-phase workflow:
 #
-# Or with options:
-#   bash submit_full_pipeline.sh config.txt --design-only
-#   bash submit_full_pipeline.sh config.txt --docking-only
-#   bash submit_full_pipeline.sh config.txt --design-args "--rosetta-to-af3"
+#   Phase 1 (this script, ~4 hours, submit-and-forget):
+#     bash submit_full_pipeline.sh config.txt \
+#       --design-args "--skip-af3-submit --skip-af3-analyze"
+#
+#   Phase 2 (seconds, from login node, after Phase 1 finishes):
+#     python run_design_pipeline.py config.txt --af3-submit-only
+#
+#   Phase 3 (from login node, after AF3 GPU jobs finish):
+#     python run_design_pipeline.py config.txt --af3-analyze-only
+#
+# Options:
+#   --design-only              Skip docking, run design pipeline only
+#   --docking-only             Run docking only, skip design pipeline
+#   --design-args "ARGS"       Extra args for design pipeline
 #
 # Monitor progress:
 #   tail -f /scratch/.../logs/pipeline_orchestrator_<JOBID>.out
