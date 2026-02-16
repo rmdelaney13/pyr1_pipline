@@ -566,6 +566,7 @@ def align_and_dock_conformers(
     cluster_rmsd_cutoff=0.75,
     geometry_csv_path=None,
     output_name_prefix="",
+    docking_repeats=1,
 ):
     """
     Main docking loop: align conformers to mutant pocket and evaluate H-bonds.
@@ -583,6 +584,7 @@ def align_and_dock_conformers(
         cluster_rmsd_cutoff: RMSD cutoff for clustering (Angstroms)
         geometry_csv_path: Path to write geometry diagnostics CSV
         output_name_prefix: Prefix for output PDB files
+        docking_repeats: Number of independent docking runs per conformer row
 
     Returns:
         Dictionary with statistics (total, passed_score, clustered)
@@ -610,7 +612,8 @@ def align_and_dock_conformers(
     max_tries = int(params.get("max_tries", 30))
     debug_every = int(params.get("debug_every", 10))
 
-    # Main conformer loop
+    # Main conformer loop (with docking repeats)
+    global_conf_idx = 0
     for conf_idx, conf in enumerate(
         conformer_prep.yield_ligand_poses(df, path_to_conformers, False, params['lig_res_num']),
         start=1
@@ -618,273 +621,278 @@ def align_and_dock_conformers(
         if not conf:
             continue
 
-        if conf_idx == 1 or conf_idx % debug_every == 0:
-            logger.info(
-                "Processing conformer %d (conf_num=%s). Stats: seen=%d passed=%d clustered=%d",
-                conf_idx, getattr(conf, "conf_num", "NA"),
-                stats["total"], stats["passed_score"], stats["clustered"]
-            )
+        # Repeat each conformer row docking_repeats times
+        for repeat_idx in range(1, docking_repeats + 1):
+            global_conf_idx += 1
 
-        # Extract alignment atoms (support multiple attribute naming conventions)
-        molecule_atoms = None
-        target_atoms = None
-        if hasattr(conf, "molecule_atoms") and hasattr(conf, "target_atoms"):
-            molecule_atoms = conf.molecule_atoms
-            target_atoms = conf.target_atoms
-        elif hasattr(conf, "lig_atoms") and hasattr(conf, "target_atoms"):
-            molecule_atoms = conf.lig_atoms
-            target_atoms = conf.target_atoms
-        elif hasattr(conf, "lig_aid") and hasattr(conf, "t_aid"):
-            molecule_atoms = conf.lig_aid
-            target_atoms = conf.t_aid
-        else:
-            logger.error(f"Conformer missing alignment attributes. Found: {dir(conf)}")
-            continue
-
-        if molecule_atoms is None or target_atoms is None or \
-           len(molecule_atoms) < 1 or len(target_atoms) < 1:
-            logger.error("Conformer has empty alignment atom lists; skipping.")
-            continue
-
-        # SVD alignment to target residue
-        try:
-            conf.align_to_target(target_res)
-        except Exception as exc:
-            logger.error(f"Alignment failed for conformer {conf_idx}: {exc}")
-            continue
-
-        # Graft ligand into mutant pose
-        try:
-            grafted_pose = graft.insert_pose_into_pose(
-                mutant_pose,
-                conf.pose,
-                len(mutant_pose.chain_sequence(1))
-            )
-            lig_idx = len(mutant_pose.chain_sequence(1)) + 1
-        except Exception as exc:
-            logger.error(f"Grafting failed for conformer {conf_idx}: {exc}")
-            continue
-
-        # Perturbation loop
-        keep_candidate = False
-        accepted_try_idx = None
-        last_hbond_result = None
-        strict_ok = False
-        out_path = None
-        score = None
-
-        for try_idx in range(1, max_tries + 1):
-            copy_pose = grafted_pose.clone()
-
-            # Apply random perturbation
-            rigid_moves.RigidBodyPerturbMover(
-                params['jump_num'],
-                params['rotation'],
-                params['translation']
-            ).apply(copy_pose)
-
-            # Determine acceptor atom for H-bond constraint
-            acceptor_name = molecule_atoms[0]
-            neighbor_names = list(molecule_atoms[1:3])
-
-            if params.get("use_closest_acceptor", True):
-                closest_atom, _, _ = _closest_ligand_acceptor_to_any_water(copy_pose, lig_idx)
-                if closest_atom is not None:
-                    acceptor_name = closest_atom
-                # No robust generic neighbor definition for dynamic atom
-                neighbor_names = []
-
-            # Add constraints
-            if (not params.get("use_closest_acceptor", True)) and \
-               target_res_idx is not None and target_res_idx > 0:
-                # Fixed constraint to target residue atom
-                add_hbond_constraint(
-                    copy_pose, lig_idx, acceptor_name,
-                    target_res_idx, target_atoms[0], params['hbond_ideal']
-                )
-
-            if params.get("use_closest_acceptor", True) and \
-               params.get("dynamic_water_pull_constraint", True):
-                # Dynamic constraint to nearest water
-                add_hbond_constraint_to_water(
-                    copy_pose, lig_idx, acceptor_name,
-                    dist_ideal=params['hbond_ideal'],
-                    dist_sd=params.get('hbond_constraint_sd', 0.3),
-                    capture_max=params.get('hbond_constraint_capture_max', 8.0),
-                )
-
-            # Auto-constrain water network
-            auto_setup_water_constraints(copy_pose, lig_idx)
-
-            # Minimize with constraints
-            t_min0 = time.time()
-            try:
-                min_mover.apply(copy_pose)
-            except Exception as exc:
-                logger.warning(f"Minimization failed for conformer {conf_idx}, try {try_idx}: {exc}")
-                continue
-            min_dt = time.time() - t_min0
-
-            if min_dt > float(params.get("slow_min_threshold_sec", 5.0)):
+            if global_conf_idx == 1 or global_conf_idx % debug_every == 0:
                 logger.info(
-                    "Slow minimization: conformer %d (conf_num=%s), try %d/%d took %.2fs",
-                    conf_idx, getattr(conf, "conf_num", "NA"), try_idx, max_tries, min_dt
+                    "Processing conformer %d/%d repeat %d/%d (conf_num=%s). Stats: seen=%d passed=%d clustered=%d",
+                    conf_idx, len(df), repeat_idx, docking_repeats,
+                    getattr(conf, "conf_num", "NA"),
+                    stats["total"], stats["passed_score"], stats["clustered"]
                 )
 
-            # Evaluate H-bond geometry (pre-pack)
+            # Extract alignment atoms (support multiple attribute naming conventions)
+            molecule_atoms = None
+            target_atoms = None
+            if hasattr(conf, "molecule_atoms") and hasattr(conf, "target_atoms"):
+                molecule_atoms = conf.molecule_atoms
+                target_atoms = conf.target_atoms
+            elif hasattr(conf, "lig_atoms") and hasattr(conf, "target_atoms"):
+                molecule_atoms = conf.lig_atoms
+                target_atoms = conf.target_atoms
+            elif hasattr(conf, "lig_aid") and hasattr(conf, "t_aid"):
+                molecule_atoms = conf.lig_aid
+                target_atoms = conf.t_aid
+            else:
+                logger.error(f"Conformer missing alignment attributes. Found: {dir(conf)}")
+                continue
+
+            if molecule_atoms is None or target_atoms is None or \
+               len(molecule_atoms) < 1 or len(target_atoms) < 1:
+                logger.error("Conformer has empty alignment atom lists; skipping.")
+                continue
+
+            # SVD alignment to target residue
             try:
-                hbond_result = dpu.evaluate_hbond_geometry(
+                conf.align_to_target(target_res)
+            except Exception as exc:
+                logger.error(f"Alignment failed for conformer {conf_idx}: {exc}")
+                continue
+
+            # Graft ligand into mutant pose
+            try:
+                grafted_pose = graft.insert_pose_into_pose(
+                    mutant_pose,
+                    conf.pose,
+                    len(mutant_pose.chain_sequence(1))
+                )
+                lig_idx = len(mutant_pose.chain_sequence(1)) + 1
+            except Exception as exc:
+                logger.error(f"Grafting failed for conformer {conf_idx}: {exc}")
+                continue
+
+            # Perturbation loop
+            keep_candidate = False
+            accepted_try_idx = None
+            last_hbond_result = None
+            strict_ok = False
+            out_path = None
+            score = None
+
+            for try_idx in range(1, max_tries + 1):
+                copy_pose = grafted_pose.clone()
+
+                # Apply random perturbation
+                rigid_moves.RigidBodyPerturbMover(
+                    params['jump_num'],
+                    params['rotation'],
+                    params['translation']
+                ).apply(copy_pose)
+
+                # Determine acceptor atom for H-bond constraint
+                acceptor_name = molecule_atoms[0]
+                neighbor_names = list(molecule_atoms[1:3])
+
+                if params.get("use_closest_acceptor", True):
+                    closest_atom, _, _ = _closest_ligand_acceptor_to_any_water(copy_pose, lig_idx)
+                    if closest_atom is not None:
+                        acceptor_name = closest_atom
+                    # No robust generic neighbor definition for dynamic atom
+                    neighbor_names = []
+
+                # Add constraints
+                if (not params.get("use_closest_acceptor", True)) and \
+                   target_res_idx is not None and target_res_idx > 0:
+                    # Fixed constraint to target residue atom
+                    add_hbond_constraint(
+                        copy_pose, lig_idx, acceptor_name,
+                        target_res_idx, target_atoms[0], params['hbond_ideal']
+                    )
+
+                if params.get("use_closest_acceptor", True) and \
+                   params.get("dynamic_water_pull_constraint", True):
+                    # Dynamic constraint to nearest water
+                    add_hbond_constraint_to_water(
+                        copy_pose, lig_idx, acceptor_name,
+                        dist_ideal=params['hbond_ideal'],
+                        dist_sd=params.get('hbond_constraint_sd', 0.3),
+                        capture_max=params.get('hbond_constraint_capture_max', 8.0),
+                    )
+
+                # Auto-constrain water network
+                auto_setup_water_constraints(copy_pose, lig_idx)
+
+                # Minimize with constraints
+                t_min0 = time.time()
+                try:
+                    min_mover.apply(copy_pose)
+                except Exception as exc:
+                    logger.warning(f"Minimization failed for conformer {conf_idx}, try {try_idx}: {exc}")
+                    continue
+                min_dt = time.time() - t_min0
+    
+                if min_dt > float(params.get("slow_min_threshold_sec", 5.0)):
+                    logger.info(
+                        "Slow minimization: conformer %d (conf_num=%s), try %d/%d took %.2fs",
+                        conf_idx, getattr(conf, "conf_num", "NA"), try_idx, max_tries, min_dt
+                    )
+    
+                # Evaluate H-bond geometry (pre-pack)
+                try:
+                    hbond_result = dpu.evaluate_hbond_geometry(
+                        copy_pose, lig_idx, acceptor_name, neighbor_names,
+                        params['hbond_min'], params['hbond_max'], params['hbond_ideal'],
+                        params['donor_angle'], params['acceptor_angle'], params['quality_min']
+                    )
+                except Exception as exc:
+                    logger.warning(f"H-bond evaluation failed for conformer {conf_idx}, try {try_idx}: {exc}")
+                    continue
+    
+                last_hbond_result = hbond_result
+                strict_ok = _passes_hbond_ideal_window(hbond_result, params)
+    
+                # Check if we accept this perturbation
+                if ((hbond_result["passed"] and strict_ok) or
+                    (not params['use_hbond_filter'])):
+                    keep_candidate = True
+                    accepted_try_idx = try_idx
+                    break
+    
+                # Log failure on last try
+                if try_idx == max_tries:
+                    num_waters, nearest_water_dist = _water_diagnostics(
+                        copy_pose, lig_idx, molecule_atoms[0]
+                    )
+                    logger.info(
+                        "Conformer %d (conf_num=%s) failed hbond filter after %d tries; "
+                        "best quality=%.3f dist=%s donor=%s acceptor=%s water_res=%s "
+                        "waters=%d nearest_O=%.3f strict=%s",
+                        conf_idx, getattr(conf, "conf_num", "NA"), max_tries,
+                        float(hbond_result.get("quality", 0.0)),
+                        f"{hbond_result.get('distance'):.3f}" if hbond_result.get("distance") else "None",
+                        f"{hbond_result.get('donor_angle'):.1f}" if hbond_result.get("donor_angle") else "None",
+                        f"{hbond_result.get('acceptor_angle'):.1f}" if hbond_result.get("acceptor_angle") else "None",
+                        hbond_result.get("water_residue", None),
+                        num_waters,
+                        nearest_water_dist if nearest_water_dist is not None else -1.0,
+                        strict_ok,
+                    )
+    
+            # Record failure if no perturbation worked
+            if not keep_candidate:
+                geometry_rows.append({
+                    "conf_idx": conf_idx,
+                    "conf_num": getattr(conf, "conf_num", "NA"),
+                    "accepted": False,
+                    "accepted_try": accepted_try_idx,
+                    "passed_score": False,
+                    "saved_cluster": False,
+                    "score": None,
+                    "distance": None if last_hbond_result is None else last_hbond_result.get("distance"),
+                    "donor_angle": None if last_hbond_result is None else last_hbond_result.get("donor_angle"),
+                    "acceptor_angle": None if last_hbond_result is None else last_hbond_result.get("acceptor_angle"),
+                    "quality": None if last_hbond_result is None else last_hbond_result.get("quality"),
+                    "water_residue": None if last_hbond_result is None else last_hbond_result.get("water_residue"),
+                    "strict_window_passed": strict_ok,
+                    "output_pdb": None,
+                })
+                stats["total"] += 1
+                continue
+    
+            # Pack sidechains
+            try:
+                packer.apply(copy_pose)
+                score = sf_all(copy_pose)
+            except Exception as exc:
+                logger.warning(f"Packing failed for conformer {conf_idx}: {exc}")
+                stats["total"] += 1
+                continue
+    
+            # Post-pack H-bond validation (CRITICAL for ML dataset quality)
+            try:
+                postpack_hbond_result = dpu.evaluate_hbond_geometry(
                     copy_pose, lig_idx, acceptor_name, neighbor_names,
                     params['hbond_min'], params['hbond_max'], params['hbond_ideal'],
-                    params['donor_angle'], params['acceptor_angle'], params['quality_min']
+                    params['donor_angle'], params['acceptor_angle'], params['quality_min'],
                 )
             except Exception as exc:
-                logger.warning(f"H-bond evaluation failed for conformer {conf_idx}, try {try_idx}: {exc}")
+                logger.warning(f"Post-pack H-bond evaluation failed for conformer {conf_idx}: {exc}")
+                stats["total"] += 1
                 continue
-
-            last_hbond_result = hbond_result
-            strict_ok = _passes_hbond_ideal_window(hbond_result, params)
-
-            # Check if we accept this perturbation
-            if ((hbond_result["passed"] and strict_ok) or
-                (not params['use_hbond_filter'])):
-                keep_candidate = True
-                accepted_try_idx = try_idx
-                break
-
-            # Log failure on last try
-            if try_idx == max_tries:
-                num_waters, nearest_water_dist = _water_diagnostics(
-                    copy_pose, lig_idx, molecule_atoms[0]
-                )
+    
+            saved_cluster = False
+            postpack_pass = bool(postpack_hbond_result.get("passed", False))
+            postpack_strict_ok = (
+                _passes_hbond_ideal_window_explicit(postpack_hbond_result, params)
+                if params.get("enforce_final_ideal_geometry", True)
+                else True
+            )
+    
+            # Final acceptance criteria
+            if (not params['use_hbond_filter']) or (postpack_pass and postpack_strict_ok):
+                if score < params['max_pass_score']:
+                    stats["passed_score"] += 1
+                    coords = dpu.ligand_heavy_atom_coords(copy_pose, lig_idx)
+    
+                    # Optional RMSD clustering
+                    c_idx = None
+                    if cluster_enabled:
+                        c_idx = _find_existing_cluster(coords, clusters, cluster_rmsd_cutoff)
+    
+                    if c_idx is None:
+                        # Save unique pose
+                        out_dir = output_dir or "output"
+                        if not os.path.exists(out_dir):
+                            os.makedirs(out_dir, exist_ok=True)
+    
+                        out = os.path.join(out_dir, f"{output_name_prefix}rep_{stats['total']}.pdb")
+                        dpu.dump_pose_pdb(copy_pose, out, rename_water=rename_water_to_tp3)
+    
+                        clusters.append({"coords": coords, "score": score, "path": out})
+                        stats["clustered"] += 1
+                        out_path = out
+                        saved_cluster = True
+            else:
+                # Log post-pack geometry rejection
                 logger.info(
-                    "Conformer %d (conf_num=%s) failed hbond filter after %d tries; "
-                    "best quality=%.3f dist=%s donor=%s acceptor=%s water_res=%s "
-                    "waters=%d nearest_O=%.3f strict=%s",
-                    conf_idx, getattr(conf, "conf_num", "NA"), max_tries,
-                    float(hbond_result.get("quality", 0.0)),
-                    f"{hbond_result.get('distance'):.3f}" if hbond_result.get("distance") else "None",
-                    f"{hbond_result.get('donor_angle'):.1f}" if hbond_result.get("donor_angle") else "None",
-                    f"{hbond_result.get('acceptor_angle'):.1f}" if hbond_result.get("acceptor_angle") else "None",
-                    hbond_result.get("water_residue", None),
-                    num_waters,
-                    nearest_water_dist if nearest_water_dist is not None else -1.0,
-                    strict_ok,
+                    "Post-pack geometry reject: conformer %d (conf_num=%s) "
+                    "dist=%s donor=%s acceptor=%s passed=%s strict=%s",
+                    conf_idx, getattr(conf, "conf_num", "NA"),
+                    f"{postpack_hbond_result.get('distance'):.3f}" if postpack_hbond_result.get("distance") else "None",
+                    f"{postpack_hbond_result.get('donor_angle'):.1f}" if postpack_hbond_result.get("donor_angle") else "None",
+                    f"{postpack_hbond_result.get('acceptor_angle'):.1f}" if postpack_hbond_result.get("acceptor_angle") else "None",
+                    postpack_pass,
+                    postpack_strict_ok,
                 )
-
-        # Record failure if no perturbation worked
-        if not keep_candidate:
+    
+            # Record geometry results
             geometry_rows.append({
                 "conf_idx": conf_idx,
                 "conf_num": getattr(conf, "conf_num", "NA"),
-                "accepted": False,
+                "accepted": True,
                 "accepted_try": accepted_try_idx,
-                "passed_score": False,
-                "saved_cluster": False,
-                "score": None,
-                "distance": None if last_hbond_result is None else last_hbond_result.get("distance"),
-                "donor_angle": None if last_hbond_result is None else last_hbond_result.get("donor_angle"),
-                "acceptor_angle": None if last_hbond_result is None else last_hbond_result.get("acceptor_angle"),
-                "quality": None if last_hbond_result is None else last_hbond_result.get("quality"),
-                "water_residue": None if last_hbond_result is None else last_hbond_result.get("water_residue"),
-                "strict_window_passed": strict_ok,
-                "output_pdb": None,
+                "passed_score": bool(score is not None and score < params['max_pass_score']),
+                "saved_cluster": saved_cluster,
+                "score": score,
+                "distance": postpack_hbond_result.get("distance"),
+                "donor_angle": postpack_hbond_result.get("donor_angle"),
+                "acceptor_angle": postpack_hbond_result.get("acceptor_angle"),
+                "quality": postpack_hbond_result.get("quality"),
+                "water_residue": postpack_hbond_result.get("water_residue"),
+                "strict_window_passed": _passes_hbond_ideal_window(postpack_hbond_result, params),
+                "postpack_geometry_passed": postpack_pass,
+                "postpack_ideal_passed": postpack_strict_ok,
+                "output_pdb": out_path,
             })
             stats["total"] += 1
-            continue
-
-        # Pack sidechains
-        try:
-            packer.apply(copy_pose)
-            score = sf_all(copy_pose)
-        except Exception as exc:
-            logger.warning(f"Packing failed for conformer {conf_idx}: {exc}")
-            stats["total"] += 1
-            continue
-
-        # Post-pack H-bond validation (CRITICAL for ML dataset quality)
-        try:
-            postpack_hbond_result = dpu.evaluate_hbond_geometry(
-                copy_pose, lig_idx, acceptor_name, neighbor_names,
-                params['hbond_min'], params['hbond_max'], params['hbond_ideal'],
-                params['donor_angle'], params['acceptor_angle'], params['quality_min'],
-            )
-        except Exception as exc:
-            logger.warning(f"Post-pack H-bond evaluation failed for conformer {conf_idx}: {exc}")
-            stats["total"] += 1
-            continue
-
-        saved_cluster = False
-        postpack_pass = bool(postpack_hbond_result.get("passed", False))
-        postpack_strict_ok = (
-            _passes_hbond_ideal_window_explicit(postpack_hbond_result, params)
-            if params.get("enforce_final_ideal_geometry", True)
-            else True
-        )
-
-        # Final acceptance criteria
-        if (not params['use_hbond_filter']) or (postpack_pass and postpack_strict_ok):
-            if score < params['max_pass_score']:
-                stats["passed_score"] += 1
-                coords = dpu.ligand_heavy_atom_coords(copy_pose, lig_idx)
-
-                # Optional RMSD clustering
-                c_idx = None
-                if cluster_enabled:
-                    c_idx = _find_existing_cluster(coords, clusters, cluster_rmsd_cutoff)
-
-                if c_idx is None:
-                    # Save unique pose
-                    out_dir = output_dir or "output"
-                    if not os.path.exists(out_dir):
-                        os.makedirs(out_dir, exist_ok=True)
-
-                    out = os.path.join(out_dir, f"{output_name_prefix}rep_{stats['total']}.pdb")
-                    dpu.dump_pose_pdb(copy_pose, out, rename_water=rename_water_to_tp3)
-
-                    clusters.append({"coords": coords, "score": score, "path": out})
-                    stats["clustered"] += 1
-                    out_path = out
-                    saved_cluster = True
-        else:
-            # Log post-pack geometry rejection
-            logger.info(
-                "Post-pack geometry reject: conformer %d (conf_num=%s) "
-                "dist=%s donor=%s acceptor=%s passed=%s strict=%s",
-                conf_idx, getattr(conf, "conf_num", "NA"),
-                f"{postpack_hbond_result.get('distance'):.3f}" if postpack_hbond_result.get("distance") else "None",
-                f"{postpack_hbond_result.get('donor_angle'):.1f}" if postpack_hbond_result.get("donor_angle") else "None",
-                f"{postpack_hbond_result.get('acceptor_angle'):.1f}" if postpack_hbond_result.get("acceptor_angle") else "None",
-                postpack_pass,
-                postpack_strict_ok,
-            )
-
-        # Record geometry results
-        geometry_rows.append({
-            "conf_idx": conf_idx,
-            "conf_num": getattr(conf, "conf_num", "NA"),
-            "accepted": True,
-            "accepted_try": accepted_try_idx,
-            "passed_score": bool(score is not None and score < params['max_pass_score']),
-            "saved_cluster": saved_cluster,
-            "score": score,
-            "distance": postpack_hbond_result.get("distance"),
-            "donor_angle": postpack_hbond_result.get("donor_angle"),
-            "acceptor_angle": postpack_hbond_result.get("acceptor_angle"),
-            "quality": postpack_hbond_result.get("quality"),
-            "water_residue": postpack_hbond_result.get("water_residue"),
-            "strict_window_passed": _passes_hbond_ideal_window(postpack_hbond_result, params),
-            "postpack_geometry_passed": postpack_pass,
-            "postpack_ideal_passed": postpack_strict_ok,
-            "output_pdb": out_path,
-        })
-        stats["total"] += 1
-
-    # Write geometry CSV
-    if geometry_csv_path:
-        pd.DataFrame(geometry_rows).to_csv(geometry_csv_path, index=False)
-        logger.info("Wrote H-bond geometry CSV: %s (%d rows)", geometry_csv_path, len(geometry_rows))
-
+    
+        # Write geometry CSV
+        if geometry_csv_path:
+            pd.DataFrame(geometry_rows).to_csv(geometry_csv_path, index=False)
+            logger.info("Wrote H-bond geometry CSV: %s (%d rows)", geometry_csv_path, len(geometry_rows))
+    
     return stats
 
 
@@ -921,6 +929,7 @@ def main():
     csv_file = _cfg_str(def_section, 'CSVFileName', '')
     path_to_conformers = _cfg_str(def_section, 'PathToConformers', '')
     output_dir = _cfg_str(section, 'OutputDir', './output')
+    docking_repeats = _cfg_int(section, 'DockingRepeats', 1)
 
     # Alignment parameters
     chain_letter = _cfg_str(def_section, 'ChainLetter', 'A')
@@ -1056,6 +1065,7 @@ def main():
     logger.info(f"Output dir: {output_dir}")
     logger.info(f"Array task: {array_index}/{array_count}")
     logger.info(f"Rows assigned: {len(df)}")
+    logger.info(f"Docking repeats: {docking_repeats} per alignment row")
     logger.info("=" * 60)
     logger.info(
         "HBond filter: enabled=%s closest_acceptor=%s cst_wt=%.2f "
@@ -1101,6 +1111,7 @@ def main():
         cluster_rmsd_cutoff=run_params['cluster_rmsd_cutoff'],
         geometry_csv_path=geometry_csv_path,
         output_name_prefix=output_name_prefix,
+        docking_repeats=docking_repeats,
     )
 
     elapsed = time.time() - start_time
