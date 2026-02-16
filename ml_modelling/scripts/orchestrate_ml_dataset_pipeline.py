@@ -315,6 +315,9 @@ def run_docking(
     # Enable in-loop clustering for local runs (skip external clustering script)
     enable_clustering = not use_slurm
 
+    # Need A8T.params for loading the reference PDB with template ligand
+    params_file = "docking/ligand_alignment/files_for_PYR1_docking/A8T.params"
+
     with open(config_path, 'w') as f:
         f.write(f"""[DEFAULT]
 CSVFileName = {alignment_csv}
@@ -324,6 +327,7 @@ ResidueNumber = {reference_residue}
 LigandResidueNumber = 1
 AutoGenerateAlignment = False
 PrePDBFileName = {reference_pdb}
+ParamsList = {params_file}
 
 [mutant_docking]
 MutantPDB = {mutant_pdb}
