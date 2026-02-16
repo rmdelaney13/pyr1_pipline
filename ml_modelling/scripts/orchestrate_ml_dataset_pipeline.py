@@ -164,14 +164,28 @@ def run_mutation_threading(
 
     Args:
         template_pdb: Path to WT PYR1 template
-        variant_signature: Mutation signature (e.g., "59K;120A;160G")
+        variant_signature: Mutation signature (e.g., "59K;120A;160G") or empty for wildtype
         output_pdb: Path for output mutant PDB
         chain: Chain ID to mutate
 
     Returns:
         True if successful, False otherwise
     """
+    import shutil
+    import pandas as pd
+
     output_pdb.parent.mkdir(parents=True, exist_ok=True)
+
+    # Handle wildtype (no mutations)
+    if pd.isna(variant_signature) or not variant_signature or variant_signature.strip() == "":
+        logger.info(f"  Wildtype (no mutations) - copying template")
+        try:
+            shutil.copy2(template_pdb, output_pdb)
+            logger.info(f"  ✓ Wildtype structure created: {output_pdb}")
+            return True
+        except Exception as e:
+            logger.error(f"  ✗ Failed to copy template: {e}")
+            return False
 
     logger.info(f"  Threading mutations: {variant_signature}")
 
@@ -179,7 +193,7 @@ def run_mutation_threading(
         'python',
         'pyr1_pipeline/scripts/thread_variant_to_pdb.py',
         '--template', template_pdb,
-        '--signature', variant_signature,
+        '--signature', str(variant_signature),
         '--output', str(output_pdb),
         '--chain', chain
     ]
