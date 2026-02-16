@@ -276,22 +276,28 @@ def run_docking(
     alignment_csv: Path,
     conformers_dir: Path,
     output_dir: Path,
+    reference_pdb: str,
     docking_repeats: int = 50,
     use_slurm: bool = False,
-    array_tasks: int = 10
+    array_tasks: int = 10,
+    reference_chain: str = 'X',
+    reference_residue: int = 1
 ) -> Optional[str]:
     """
     Run docking to mutant pocket.
 
     Args:
-        mutant_pdb: Pre-threaded mutant structure
+        mutant_pdb: Pre-threaded mutant structure (NO ligand)
         conformers_sdf: Ligand conformers SDF
         alignment_csv: Alignment table CSV
         conformers_dir: Conformers params/PDB directory
         output_dir: Output directory
+        reference_pdb: Template PDB WITH ligand for alignment (e.g., 3QN1_H2O.pdb)
         docking_repeats: Number of docking attempts per conformer
         use_slurm: Submit as SLURM array job
         array_tasks: Number of SLURM array tasks
+        reference_chain: Chain of template ligand in reference PDB (default: 'X')
+        reference_residue: Residue number of template ligand (default: 1)
 
     Returns:
         Job ID if SLURM, 'local' if local, None if failed
@@ -301,11 +307,19 @@ def run_docking(
     logger.info(f"  Docking to mutant pocket ({docking_repeats} repeats)...")
 
     # Create config file
+    # CRITICAL: ChainLetter/ResidueNumber point to the template LIGAND in reference_pdb
+    # This ligand provides the target atom coordinates (O2, C11, C9) for SVD alignment
+    # The mutant_pdb is used as the docking target (has no ligand)
     config_path = output_dir / 'docking_config.txt'
     with open(config_path, 'w') as f:
         f.write(f"""[DEFAULT]
 CSVFileName = {alignment_csv}
 PathToConformers = {conformers_dir}
+ChainLetter = {reference_chain}
+ResidueNumber = {reference_residue}
+LigandResidueNumber = 1
+AutoGenerateAlignment = False
+PrePDBFileName = {reference_pdb}
 
 [mutant_docking]
 MutantPDB = {mutant_pdb}
@@ -464,8 +478,11 @@ def process_single_pair(
     pair: Dict,
     cache_dir: Path,
     template_pdb: str,
+    reference_pdb: str,
     use_slurm: bool = False,
-    docking_repeats: int = 50
+    docking_repeats: int = 50,
+    reference_chain: str = 'X',
+    reference_residue: int = 1
 ) -> Dict:
     """
     Process a single (ligand, variant) pair through the full pipeline.
@@ -473,9 +490,12 @@ def process_single_pair(
     Args:
         pair: Dict with pair_id, ligand_name, ligand_smiles, variant_signature, etc.
         cache_dir: Base cache directory
-        template_pdb: WT PYR1 template PDB path
+        template_pdb: WT PYR1 template PDB path (NO ligand, for threading)
+        reference_pdb: Reference PDB WITH ligand for alignment (e.g., 3QN1_H2O.pdb)
         use_slurm: Use SLURM for parallelization
         docking_repeats: Number of docking repeats
+        reference_chain: Chain of template ligand in reference PDB (default: 'X')
+        reference_residue: Residue number of template ligand (default: 1)
 
     Returns:
         Dict with status and any errors
@@ -592,8 +612,11 @@ def process_single_pair(
             alignment_csv=alignment_csv,
             conformers_dir=conformers_params_dir,
             output_dir=docking_dir,
+            reference_pdb=reference_pdb,
             docking_repeats=docking_repeats,
-            use_slurm=use_slurm
+            use_slurm=use_slurm,
+            reference_chain=reference_chain,
+            reference_residue=reference_residue
         )
 
         if job_id:
@@ -669,10 +692,13 @@ def main():
     )
     parser.add_argument('--pairs-csv', required=True, help='CSV with pair_id, ligand_smiles, variant_signature, label')
     parser.add_argument('--cache-dir', required=True, help='Cache directory for outputs')
-    parser.add_argument('--template-pdb', required=True, help='WT PYR1 template PDB')
+    parser.add_argument('--template-pdb', required=True, help='WT PYR1 template PDB (NO ligand, for threading)')
+    parser.add_argument('--reference-pdb', required=True, help='Reference PDB WITH template ligand for alignment (e.g., 3QN1_H2O.pdb)')
     parser.add_argument('--docking-repeats', type=int, default=50, help='Docking repeats per conformer')
     parser.add_argument('--use-slurm', action='store_true', help='Submit jobs to SLURM')
     parser.add_argument('--max-pairs', type=int, help='Limit number of pairs (for testing)')
+    parser.add_argument('--reference-chain', default='X', help='Chain of template ligand in reference PDB (default: X)')
+    parser.add_argument('--reference-residue', type=int, default=1, help='Residue number of template ligand (default: 1)')
 
     args = parser.parse_args()
 
@@ -696,8 +722,11 @@ def main():
             pair=row.to_dict(),
             cache_dir=cache_dir,
             template_pdb=args.template_pdb,
+            reference_pdb=args.reference_pdb,
             use_slurm=args.use_slurm,
-            docking_repeats=args.docking_repeats
+            docking_repeats=args.docking_repeats,
+            reference_chain=args.reference_chain,
+            reference_residue=args.reference_residue
         )
 
         results.append({

@@ -1006,7 +1006,7 @@ def main():
     else:
         pyrosetta.init("-mute all")
 
-    # Load mutant structure
+    # Load mutant structure (for docking target - has NO ligand)
     mutant_pose = Pose()
     if params_list:
         res_set = pyrosetta.generate_nonstandard_residue_set(mutant_pose, params_list)
@@ -1016,17 +1016,48 @@ def main():
 
     logger.info(f"Loaded mutant pose: {mutant_pose.total_residue()} residues")
 
-    # Resolve target residue for alignment atom definitions
-    target_idx = mutant_pose.pdb_info().pdb2pose(chain_letter, residue_number)
-    if target_idx <= 0 or target_idx > mutant_pose.total_residue():
-        logger.error(
-            f"Could not map target residue {chain_letter}{residue_number} into mutant pose. "
-            f"pdb2pose={target_idx}, total_residue={mutant_pose.total_residue()}"
-        )
-        sys.exit(1)
+    # Load reference structure (for alignment target - has template ligand)
+    # This provides the target atom coordinates (e.g., O2, C11, C9) for SVD alignment
+    pre_pdb = _cfg_str(def_section, 'PrePDBFileName', '')
 
-    target_res = mutant_pose.residue(target_idx)
-    logger.info(f"Target residue: {chain_letter}{residue_number} -> pose index {target_idx}")
+    if pre_pdb and os.path.exists(pre_pdb):
+        logger.info(f"Loading reference structure for alignment: {pre_pdb}")
+        reference_pose = Pose()
+        if params_list:
+            res_set_ref = pyrosetta.generate_nonstandard_residue_set(reference_pose, params_list)
+            pyrosetta.pose_from_file(reference_pose, res_set_ref, pre_pdb)
+        else:
+            pyrosetta.pose_from_file(reference_pose, pre_pdb)
+
+        # Resolve target residue from reference structure (template ligand)
+        target_idx = reference_pose.pdb_info().pdb2pose(chain_letter, residue_number)
+        if target_idx <= 0 or target_idx > reference_pose.total_residue():
+            logger.error(
+                f"Could not map target residue {chain_letter}{residue_number} in reference pose. "
+                f"pdb2pose={target_idx}, total_residue={reference_pose.total_residue()}"
+            )
+            sys.exit(1)
+
+        target_res = reference_pose.residue(target_idx)
+        logger.info(f"Target residue from reference: {chain_letter}{residue_number} -> pose index {target_idx}")
+    else:
+        # Fallback: try to get target residue from mutant pose (old behavior)
+        # This will fail if mutant has no ligand and ChainLetter=X
+        logger.warning(
+            "No PrePDBFileName specified. Attempting to extract target residue from mutant pose. "
+            "This may fail if mutant has no ligand and ChainLetter points to ligand chain."
+        )
+        target_idx = mutant_pose.pdb_info().pdb2pose(chain_letter, residue_number)
+        if target_idx <= 0 or target_idx > mutant_pose.total_residue():
+            logger.error(
+                f"Could not map target residue {chain_letter}{residue_number} into mutant pose. "
+                f"pdb2pose={target_idx}, total_residue={mutant_pose.total_residue()}. "
+                f"Consider setting PrePDBFileName to a structure with the template ligand."
+            )
+            sys.exit(1)
+
+        target_res = mutant_pose.residue(target_idx)
+        logger.info(f"Target residue from mutant: {chain_letter}{residue_number} -> pose index {target_idx}")
 
     # Load conformer table
     df = prepare_dataframe(csv_file, path_to_conformers, target_res, lig_res_num, auto_align)
