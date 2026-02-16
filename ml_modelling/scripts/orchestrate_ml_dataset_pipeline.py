@@ -287,7 +287,7 @@ ArrayTaskCount = {array_tasks}
         # Run locally (single task, array index 0)
         cmd = [
             'python',
-            'pyr1_pipeline/docking/scripts/grade_conformers_mutant_docking.py',
+            'docking/scripts/grade_conformers_mutant_docking.py',
             str(config_path),
             '0'  # Array index 0
         ]
@@ -324,7 +324,7 @@ def run_clustering(
 
     cmd = [
         'python',
-        'pyr1_pipeline/docking/scripts/cluster_docked_with_stats.py',
+        'docking/scripts/cluster_docked_with_stats.py',
         '--input-dir', str(docking_output_dir),
         '--output-dir', str(cluster_output_dir),
         '--rmsd-cutoff', str(rmsd_cutoff),
