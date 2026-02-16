@@ -246,14 +246,27 @@ ArrayTaskCount = {array_tasks}
 """)
 
     if use_slurm:
+        # Estimate walltime based on docking repeats
+        # ~2-5 seconds per docking attempt, so:
+        # 10 repeats: 30 min, 50 repeats: 2 hours, 100 repeats: 4 hours
+        if docking_repeats <= 10:
+            walltime = '00:30:00'
+        elif docking_repeats <= 50:
+            walltime = '02:00:00'
+        elif docking_repeats <= 100:
+            walltime = '04:00:00'
+        else:
+            walltime = '08:00:00'
+
         # Submit SLURM array job
         cmd = [
             'sbatch',
+            '--partition', 'amilan',
             '--qos', 'normal',
             '--job-name', f"dock_{mutant_pdb.stem}",
             '--output', str(output_dir / 'docking_%a.log'),
             '--array', f'0-{array_tasks-1}',
-            '--time', '04:00:00',
+            '--time', walltime,
             '--cpus-per-task', '4',
             '--mem', '8G',
             'docking/scripts/submit_docking_mutant.sh',
