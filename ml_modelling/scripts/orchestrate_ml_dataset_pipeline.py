@@ -249,6 +249,7 @@ ArrayTaskCount = {array_tasks}
         # Submit SLURM array job
         cmd = [
             'sbatch',
+            '--qos', 'normal',
             '--job-name', f"dock_{mutant_pdb.stem}",
             '--output', str(output_dir / 'docking_%a.log'),
             '--array', f'0-{array_tasks-1}',
