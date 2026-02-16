@@ -191,7 +191,7 @@ def run_mutation_threading(
 
     cmd = [
         'python',
-        'pyr1_pipeline/scripts/thread_variant_to_pdb.py',
+        'scripts/thread_variant_to_pdb.py',
         '--template', template_pdb,
         '--signature', str(variant_signature),
         '--output', str(output_pdb),
@@ -255,7 +255,7 @@ ArrayTaskCount = {array_tasks}
             '--time', '04:00:00',
             '--cpus-per-task', '4',
             '--mem', '8G',
-            'pyr1_pipeline/docking/scripts/submit_docking_mutant.sh',  # TODO: Create this wrapper
+            'docking/scripts/submit_docking_mutant.sh',
             str(config_path)
         ]
 
