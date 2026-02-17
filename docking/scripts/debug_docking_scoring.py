@@ -356,9 +356,12 @@ def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
 
     logger.info(f"Config sections found: {config.sections()}")
     if "mutant_docking" not in config:
+        with open(config_path, "r") as fh:
+            raw = fh.read()
         logger.error(
             f"Config file must have [mutant_docking] section. "
-            f"Found sections: {config.sections()}"
+            f"Found sections: {config.sections()}\n"
+            f"--- File contents ({len(raw)} bytes) ---\n{raw[:1000]}\n--- end ---"
         )
         sys.exit(1)
 
