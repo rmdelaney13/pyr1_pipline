@@ -638,19 +638,21 @@ def run_mutation_threading(
 def run_constrained_relax(
     input_pdb: Path,
     output_pdb: Path,
+    variant_signature: str,
     params: Optional[Path] = None,
     timeout: int = 1200
 ) -> bool:
     """
-    Run backbone-constrained FastRelax on a threaded mutant structure.
+    Run shell-restricted backbone-constrained FastRelax on a threaded mutant.
 
-    Applies CoordinateConstraints on backbone heavy atoms (N, CA, C, O)
-    with HarmonicFunc(0.0, 0.5 A SD) to relieve steric strain from
-    threading while preserving backbone geometry.
+    Only relaxes sidechains within a 10 A shell around mutated residues.
+    Backbone is constrained with CoordinateConstraints; everything outside
+    the shell is frozen.
 
     Args:
         input_pdb: Threaded mutant PDB (protein-only, from threading stage)
         output_pdb: Output relaxed PDB path
+        variant_signature: Mutation signature (e.g., "59K;120A;160G")
         params: Optional .params file for extra_res_fa
         timeout: Max seconds (default 1200 = 20 min)
 
@@ -666,6 +668,7 @@ def run_constrained_relax(
         relax_script,
         str(input_pdb),
         str(output_pdb),
+        '--mutations', variant_signature,
     ]
 
     if params:
@@ -685,14 +688,16 @@ def run_constrained_relax(
 def run_constrained_relax_slurm(
     input_pdb: Path,
     output_pdb: Path,
+    variant_signature: str,
     params: Optional[Path] = None
 ) -> Optional[str]:
     """
-    Submit constrained relax to SLURM.
+    Submit shell-restricted constrained relax to SLURM.
 
     Args:
         input_pdb: Threaded mutant PDB
         output_pdb: Output relaxed PDB path
+        variant_signature: Mutation signature (e.g., "59K;120A;160G")
         params: Optional .params file
 
     Returns:
@@ -707,6 +712,7 @@ def run_constrained_relax_slurm(
         slurm_script,
         str(input_pdb),
         str(output_pdb),
+        variant_signature,
     ]
 
     if params:
@@ -1098,6 +1104,7 @@ def process_single_pair(
                 job_id = run_constrained_relax_slurm(
                     input_pdb=mutant_pdb,
                     output_pdb=mutant_relaxed_pdb,
+                    variant_signature=pair['variant_signature'],
                     params=Path(a8t_params),
                 )
                 if job_id:
@@ -1110,6 +1117,7 @@ def process_single_pair(
                 success = run_constrained_relax(
                     input_pdb=mutant_pdb,
                     output_pdb=mutant_relaxed_pdb,
+                    variant_signature=pair['variant_signature'],
                     params=Path(a8t_params),
                 )
                 if success:
