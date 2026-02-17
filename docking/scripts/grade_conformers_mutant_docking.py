@@ -752,7 +752,7 @@ def align_and_dock_conformers(
             out_path = None
             score = None
 
-            n_free_tries = int(params.get("collision_free_tries", 1))
+            n_free_tries = int(params.get("collision_free_tries", 0))
 
             for try_idx in range(1, max_tries + 1):
                 copy_pose = grafted_pose.clone()
@@ -897,13 +897,14 @@ def align_and_dock_conformers(
                     "strict_window_passed": strict_ok,
                     "postpack_geometry_passed": False,
                     "postpack_ideal_passed": False,
+                    "postpack_collision_reject": False,
                     "pocket_distance": None,
                     "pocket_passed": False,
                     "output_pdb": None,
                 })
                 stats["total"] += 1
                 continue
-    
+
             # Pack sidechains
             try:
                 packer.apply(copy_pose)
@@ -965,6 +966,52 @@ def align_and_dock_conformers(
                         conf_idx, exc,
                     )
 
+            # Post-pack collision check: rebuild grid from packed protein
+            # (with real sidechains, no ligand) and reject if ligand still
+            # clashes.  This matches the proven old script's critical filter
+            # (grade_conformers_docked_to_sequence_multiple_slurm1.py L227-245).
+            for atom_id in range(1, copy_pose.residue(lig_idx).natoms() + 1):
+                conf.pose.residue(1).set_xyz(
+                    atom_id, copy_pose.residue(lig_idx).xyz(atom_id)
+                )
+            postpack_check_pose = copy_pose.clone()
+            postpack_check_pose.delete_residue_slow(lig_idx)
+            postpack_grid = collision_check.CollisionGrid(
+                postpack_check_pose,
+                bin_width=float(params.get('bin_width', 1.0)),
+                vdw_modifier=float(params.get('vdw_modifier', 0.7)),
+                include_sc=True,
+            )
+            if conf.check_collision(postpack_grid):
+                logger.info(
+                    "Post-pack collision reject: conformer %d (conf_num=%s), try %d",
+                    conf_idx, getattr(conf, "conf_num", "NA"), accepted_try_idx,
+                )
+                geometry_rows.append({
+                    "conf_idx": conf_idx,
+                    "conf_num": getattr(conf, "conf_num", "NA"),
+                    "accepted": True,
+                    "accepted_try": accepted_try_idx,
+                    "passed_score": False,
+                    "saved_cluster": False,
+                    "score": None,
+                    "relative_score": None,
+                    "distance": None if last_hbond_result is None else last_hbond_result.get("distance"),
+                    "donor_angle": None if last_hbond_result is None else last_hbond_result.get("donor_angle"),
+                    "acceptor_angle": None if last_hbond_result is None else last_hbond_result.get("acceptor_angle"),
+                    "quality": None if last_hbond_result is None else last_hbond_result.get("quality"),
+                    "water_residue": None if last_hbond_result is None else last_hbond_result.get("water_residue"),
+                    "strict_window_passed": strict_ok,
+                    "postpack_geometry_passed": False,
+                    "postpack_ideal_passed": False,
+                    "postpack_collision_reject": True,
+                    "pocket_distance": None,
+                    "pocket_passed": False,
+                    "output_pdb": None,
+                })
+                stats["total"] += 1
+                continue
+
             score = sf_all(copy_pose)
             relative_score = score - baseline_score
 
@@ -1004,10 +1051,14 @@ def align_and_dock_conformers(
             )
     
             # Final acceptance criteria
+            # Scoring mode: absolute (score < threshold) or relative (score - baseline < threshold)
+            score_for_filter = relative_score if params.get('use_relative_scoring', False) else score
+            passes_score = score_for_filter < params['max_pass_score']
+
             pocket_passed = True
             dist_to_pocket = None
             if (not params['use_hbond_filter']) or (postpack_pass and postpack_strict_ok):
-                if relative_score < params['max_pass_score']:
+                if passes_score:
                     stats["passed_score"] += 1
                     coords = dpu.ligand_heavy_atom_coords(copy_pose, lig_idx)
 
@@ -1063,7 +1114,7 @@ def align_and_dock_conformers(
                 "conf_num": getattr(conf, "conf_num", "NA"),
                 "accepted": True,
                 "accepted_try": accepted_try_idx,
-                "passed_score": bool(score is not None and relative_score < params['max_pass_score']),
+                "passed_score": bool(score is not None and passes_score),
                 "saved_cluster": saved_cluster,
                 "score": score,
                 "relative_score": relative_score,
@@ -1075,12 +1126,13 @@ def align_and_dock_conformers(
                 "strict_window_passed": _passes_hbond_ideal_window(postpack_hbond_result, params),
                 "postpack_geometry_passed": postpack_pass,
                 "postpack_ideal_passed": postpack_strict_ok,
+                "postpack_collision_reject": False,
                 "pocket_distance": dist_to_pocket,
                 "pocket_passed": pocket_passed,
                 "output_pdb": out_path,
             })
             stats["total"] += 1
-    
+
         # Write geometry CSV
         if geometry_csv_path:
             pd.DataFrame(geometry_rows).to_csv(geometry_csv_path, index=False)
@@ -1157,7 +1209,8 @@ def main():
         'jump_num': _cfg_int(section, "JumpNum", 2),
         'rotation': _cfg_float(section, "Rotation", 25.0),
         'translation': _cfg_float(section, "Translation", 0.5),
-        'max_pass_score': _cfg_float(section, "MaxScore", 100.0),
+        'max_pass_score': _cfg_float(section, "MaxScore", -200.0),
+        'use_relative_scoring': _cfg_bool(section, "UseRelativeScoring", False),
         'hbond_ideal': hbond_ideal,
         'hbond_min': hbond_min,
         'hbond_max': hbond_max,
@@ -1191,7 +1244,7 @@ def main():
         'vdw_modifier': _cfg_float(section, "VDW_Modifier", 0.7),
         'enable_postpack_remin': _cfg_bool(section, "EnablePostPackReMinimization", True),
         'postpack_remin_shell_radius': _cfg_float(section, "PostPackReMinShellRadius", 8.0),
-        'collision_free_tries': _cfg_int(section, "CollisionFreeTries", 1),
+        'collision_free_tries': _cfg_int(section, "CollisionFreeTries", 0),
         'soft_rep_weight': _cfg_float(section, "SoftRepWeight", 0.1),
         'collision_keep_sidechains': _cfg_clean(section.get("CollisionKeepSidechains", "")),
         'dump_debug_pdbs': _cfg_bool(section, "DumpDebugPDBs", False),
@@ -1370,6 +1423,11 @@ def main():
         logger.warning("Pocket proximity filter: enabled but no pocket center available (no reference PDB)")
     else:
         logger.info("Pocket proximity filter: disabled")
+    scoring_mode = "relative" if run_params['use_relative_scoring'] else "absolute"
+    logger.info(
+        "Scoring: mode=%s, threshold=%.1f REU",
+        scoring_mode, run_params['max_pass_score'],
+    )
     logger.info("=" * 60)
 
     # Run docking

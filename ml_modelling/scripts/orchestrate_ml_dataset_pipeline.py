@@ -796,7 +796,8 @@ EnablePoseClusteringInArrayTask = {str(enable_clustering)}
 ClusterRMSDCutoff = 0.75
 EnablePocketProximityFilter = True
 PocketMaxDistance = 8.0
-MaxScore = 100
+MaxScore = -200
+UseRelativeScoring = False
 """)
 
     if use_slurm:
