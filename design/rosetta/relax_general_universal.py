@@ -87,12 +87,21 @@ def detect_charged_groups(pose, ligand_res_idx):
         'phosphates': []
     }
 
-    # Build atom connectivity map
+    # Build atom connectivity map from residue type bond graph
+    # (Residue.is_bonded checks inter-residue bonds, not intra-residue atoms)
     atom_neighbors = defaultdict(list)
-    for i in range(1, lig_res.natoms() + 1):
-        for j in range(1, lig_res.natoms() + 1):
-            if i != j and lig_res.is_bonded(i, j):
+    res_type = lig_res.type()
+    try:
+        for i in range(1, lig_res.natoms() + 1):
+            for j in res_type.bonded_neighbor(i):
                 atom_neighbors[i].append(j)
+    except Exception:
+        # Fallback: distance-based bond detection
+        for i in range(1, lig_res.natoms() + 1):
+            for j in range(i + 1, lig_res.natoms() + 1):
+                if lig_res.xyz(i).distance(lig_res.xyz(j)) < 1.9:
+                    atom_neighbors[i].append(j)
+                    atom_neighbors[j].append(i)
 
     # Detect carboxylates: C bonded to 2+ oxygens
     for i in range(1, lig_res.natoms() + 1):
