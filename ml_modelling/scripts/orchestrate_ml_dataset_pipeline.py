@@ -1143,34 +1143,46 @@ def process_single_pair(
     # STAGE 5: Docking to Mutant Pocket
     # ──────────────────────────────────────────────────────────────
     if not is_stage_complete(pair_cache, 'docking'):
-        logger.info("[5/8] Docking to Mutant")
         docking_dir = pair_cache / 'docking'
 
-        job_id = run_docking(
-            mutant_pdb=mutant_pdb,
-            conformers_sdf=conformers_sdf,
-            alignment_csv=alignment_csv,
-            conformers_dir=conformers_params_dir,
-            output_dir=docking_dir,
-            reference_pdb=reference_pdb,
-            docking_repeats=docking_repeats,
-            use_slurm=use_slurm,
-            array_tasks=docking_arrays,
-            reference_chain=reference_chain,
-            reference_residue=reference_residue
-        )
-
-        if job_id:
-            if use_slurm:
-                # For SLURM, job is submitted but not finished
-                # Don't mark as complete yet - skip to next pair
-                logger.info(f"  ⏳ SLURM job submitted: {job_id}")
-                logger.info(f"  → Re-run orchestrator after jobs finish to aggregate stats")
-                return {'status': 'SLURM_SUBMITTED', 'job_id': job_id, 'stage': 'docking'}
-            else:
+        # SLURM re-entry: detect output from a previous SLURM run
+        # (geometry CSVs or PDB files already exist → mark complete)
+        if docking_dir.exists() and use_slurm:
+            existing_csvs = list(docking_dir.glob('hbond_geometry_summary*.csv'))
+            existing_pdbs = list(docking_dir.glob('*rep_*.pdb'))
+            if existing_csvs or existing_pdbs:
+                logger.info("[5/8] Docking to Mutant: ✓ DONE (SLURM re-entry, found %d CSVs, %d PDBs)",
+                            len(existing_csvs), len(existing_pdbs))
                 mark_stage_complete(pair_cache, 'docking', str(docking_dir))
-        else:
-            return {'status': 'FAILED', 'stage': 'docking'}
+            else:
+                logger.info("[5/8] Docking to Mutant")
+
+        if not is_stage_complete(pair_cache, 'docking'):
+            logger.info("[5/8] Docking to Mutant")
+
+            job_id = run_docking(
+                mutant_pdb=mutant_pdb,
+                conformers_sdf=conformers_sdf,
+                alignment_csv=alignment_csv,
+                conformers_dir=conformers_params_dir,
+                output_dir=docking_dir,
+                reference_pdb=reference_pdb,
+                docking_repeats=docking_repeats,
+                use_slurm=use_slurm,
+                array_tasks=docking_arrays,
+                reference_chain=reference_chain,
+                reference_residue=reference_residue
+            )
+
+            if job_id:
+                if use_slurm:
+                    logger.info(f"  ⏳ SLURM job submitted: {job_id}")
+                    logger.info(f"  → Re-run orchestrator after jobs finish to continue")
+                    return {'status': 'SLURM_SUBMITTED', 'job_id': job_id, 'stage': 'docking'}
+                else:
+                    mark_stage_complete(pair_cache, 'docking', str(docking_dir))
+            else:
+                return {'status': 'FAILED', 'stage': 'docking'}
 
     else:
         logger.info("[5/8] Docking to Mutant: ✓ CACHED")
