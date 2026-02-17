@@ -71,6 +71,7 @@ import pyrosetta.rosetta.core.scoring as scoring
 import docking_pipeline_utils as dpu
 import alignment
 import conformer_prep
+import collision_check
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -606,6 +607,27 @@ def align_and_dock_conformers(
     min_mover.movemap(mm)
     min_mover.score_function(sf_cst)
 
+    # Compute baseline score (protein-only, no ligand) for relative scoring
+    baseline_score = sf_all(mutant_pose)
+    logger.info("Protein baseline score (no ligand): %.2f REU", baseline_score)
+
+    # Build backbone collision grid (excludes water so ligand can occupy water sites)
+    water_indices = set(
+        i for i in range(1, mutant_pose.total_residue() + 1)
+        if mutant_pose.residue(i).is_water()
+    )
+    backbone_grid = collision_check.CollisionGrid(
+        mutant_pose,
+        bin_width=float(params.get('bin_width', 1.0)),
+        vdw_modifier=float(params.get('vdw_modifier', 0.7)),
+        include_sc=False,
+        excluded_residues=water_indices,
+    )
+    logger.info(
+        "Collision grid built: %d protein residues (excluded %d waters), backbone-only",
+        mutant_pose.total_residue() - len(water_indices), len(water_indices),
+    )
+
     # Statistics tracking
     stats = {"total": 0, "passed_score": 0, "clustered": 0}
     clusters = []
@@ -692,6 +714,16 @@ def align_and_dock_conformers(
                     params['rotation'],
                     params['translation']
                 ).apply(copy_pose)
+
+                # Sync perturbed ligand coords to conformer pose for collision check
+                for atom_id in range(1, copy_pose.residue(lig_idx).natoms() + 1):
+                    conf.pose.residue(1).set_xyz(
+                        atom_id, copy_pose.residue(lig_idx).xyz(atom_id)
+                    )
+
+                # Backbone collision check — skip if ligand clashes with protein
+                if conf.check_collision(backbone_grid):
+                    continue
 
                 # Determine acceptor atom for H-bond constraint
                 acceptor_name = molecule_atoms[0]
@@ -801,6 +833,7 @@ def align_and_dock_conformers(
                     "passed_score": False,
                     "saved_cluster": False,
                     "score": None,
+                    "relative_score": None,
                     "distance": None if last_hbond_result is None else last_hbond_result.get("distance"),
                     "donor_angle": None if last_hbond_result is None else last_hbond_result.get("donor_angle"),
                     "acceptor_angle": None if last_hbond_result is None else last_hbond_result.get("acceptor_angle"),
@@ -820,6 +853,7 @@ def align_and_dock_conformers(
             try:
                 packer.apply(copy_pose)
                 score = sf_all(copy_pose)
+                relative_score = score - baseline_score
             except Exception as exc:
                 logger.warning(f"Packing failed for conformer {conf_idx}: {exc}")
                 stats["total"] += 1
@@ -849,7 +883,7 @@ def align_and_dock_conformers(
             pocket_passed = True
             dist_to_pocket = None
             if (not params['use_hbond_filter']) or (postpack_pass and postpack_strict_ok):
-                if score < params['max_pass_score']:
+                if relative_score < params['max_pass_score']:
                     stats["passed_score"] += 1
                     coords = dpu.ligand_heavy_atom_coords(copy_pose, lig_idx)
 
@@ -905,9 +939,10 @@ def align_and_dock_conformers(
                 "conf_num": getattr(conf, "conf_num", "NA"),
                 "accepted": True,
                 "accepted_try": accepted_try_idx,
-                "passed_score": bool(score is not None and score < params['max_pass_score']),
+                "passed_score": bool(score is not None and relative_score < params['max_pass_score']),
                 "saved_cluster": saved_cluster,
                 "score": score,
+                "relative_score": relative_score,
                 "distance": postpack_hbond_result.get("distance"),
                 "donor_angle": postpack_hbond_result.get("donor_angle"),
                 "acceptor_angle": postpack_hbond_result.get("acceptor_angle"),
@@ -998,7 +1033,7 @@ def main():
         'jump_num': _cfg_int(section, "JumpNum", 2),
         'rotation': _cfg_float(section, "Rotation", 25.0),
         'translation': _cfg_float(section, "Translation", 0.5),
-        'max_pass_score': _cfg_float(section, "MaxScore", -300.0),
+        'max_pass_score': _cfg_float(section, "MaxScore", 100.0),
         'hbond_ideal': hbond_ideal,
         'hbond_min': hbond_min,
         'hbond_max': hbond_max,
@@ -1028,6 +1063,8 @@ def main():
         'pocket_center': pocket_center,
         'pocket_max_distance': _cfg_float(section, "PocketMaxDistance", 8.0),
         'enable_pocket_filter': _cfg_bool(section, "EnablePocketProximityFilter", True),
+        'bin_width': _cfg_float(section, "BinWidth", 1.0),
+        'vdw_modifier': _cfg_float(section, "VDW_Modifier", 0.7),
     }
 
     # Validate inputs
