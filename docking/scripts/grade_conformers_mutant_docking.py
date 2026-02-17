@@ -600,6 +600,19 @@ def align_and_dock_conformers(
         float(params.get("hbond_constraint_weight", 1.0))
     )
 
+    # Soft-rep scorefunction for initial clash resolution.
+    # With tight mutant pockets the SVD-aligned ligand is deeply embedded;
+    # gradient descent with full fa_rep can't escape.  Ramping from soft
+    # to hard rep lets the ligand slide into position under constraint
+    # guidance before applying the full repulsive potential.
+    soft_rep_weight = float(params.get("soft_rep_weight", 0.1))
+    sf_soft = pyrosetta.get_fa_scorefxn()
+    sf_soft.set_weight(scoring.fa_rep, soft_rep_weight)
+    sf_soft.set_weight(
+        scoring.atom_pair_constraint,
+        float(params.get("hbond_constraint_weight", 1.0))
+    )
+
     min_mover = pyrosetta.rosetta.protocols.minimization_packing.MinMover()
     mm = pyrosetta.MoveMap()
     # Don't enable all jumps - we'll selectively enable only the ligand jump
@@ -607,6 +620,10 @@ def align_and_dock_conformers(
     mm.set_jump(False)
     min_mover.movemap(mm)
     min_mover.score_function(sf_cst)
+
+    soft_min_mover = pyrosetta.rosetta.protocols.minimization_packing.MinMover()
+    soft_min_mover.movemap(mm)
+    soft_min_mover.score_function(sf_soft)
 
     # Compute baseline score (protein-only, no ligand) for relative scoring
     baseline_score = sf_all(mutant_pose)
@@ -786,9 +803,12 @@ def align_and_dock_conformers(
                 mm.set_jump(False)
                 mm.set_jump(lig_jump_num, True)
 
-                # Minimize with constraints
+                # Two-stage minimization: soft-rep then full-rep.
+                # Stage 1 (soft fa_rep) lets the ligand slide past clashes
+                # under constraint guidance; stage 2 refines with full rep.
                 t_min0 = time.time()
                 try:
+                    soft_min_mover.apply(copy_pose)
                     min_mover.apply(copy_pose)
                 except Exception as exc:
                     logger.warning(f"Minimization failed for conformer {conf_idx}, try {try_idx}: {exc}")
@@ -1141,6 +1161,7 @@ def main():
         'enable_postpack_remin': _cfg_bool(section, "EnablePostPackReMinimization", True),
         'postpack_remin_shell_radius': _cfg_float(section, "PostPackReMinShellRadius", 8.0),
         'collision_free_tries': _cfg_int(section, "CollisionFreeTries", 1),
+        'soft_rep_weight': _cfg_float(section, "SoftRepWeight", 0.1),
     }
 
     # Validate inputs
@@ -1285,6 +1306,10 @@ def main():
                 else ""
             ),
         )
+    logger.info(
+        "Soft-rep ramp: fa_rep weight=%.2f → 1.00 (two-stage minimization)",
+        run_params['soft_rep_weight'],
+    )
     if run_params['collision_free_tries'] > 0:
         logger.info(
             "Collision-free tries: %d (unperturbed SVD-aligned pose, no collision check)",
