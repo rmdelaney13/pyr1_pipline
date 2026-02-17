@@ -18,6 +18,10 @@
 # Manifest format (tab-separated, one row per structure):
 #   input_pdb  output_pdb  ligand_params  xml_path  ligand_chain  water_chain
 
+# Change to the directory where sbatch was called (project root)
+# This ensures relative paths in the Python script resolve correctly
+cd "$SLURM_SUBMIT_DIR" || exit 1
+
 MANIFEST="$1"
 
 if [ -z "$MANIFEST" ] || [ ! -f "$MANIFEST" ]; then

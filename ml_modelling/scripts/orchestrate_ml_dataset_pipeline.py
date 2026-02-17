@@ -44,6 +44,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Project root: two levels up from this script (ml_modelling/scripts/ -> project root)
+_SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = _SCRIPT_DIR.parent.parent
+
 
 # ═══════════════════════════════════════════════════════════════════
 # CACHE KEY GENERATION
@@ -304,9 +308,11 @@ def run_relax_single(
     """
     output_pdb.parent.mkdir(parents=True, exist_ok=True)
 
+    relax_script = str(PROJECT_ROOT / 'design' / 'rosetta' / 'relax_general_universal.py')
+
     cmd = [
         'python',
-        'design/rosetta/relax_general_universal.py',
+        relax_script,
         str(input_pdb),
         str(output_pdb),
         str(ligand_params),
@@ -352,7 +358,7 @@ def run_relax_slurm(
             f.write(f"{pdb}\t{output_pdb}\t{ligand_params}\t{xml_path}\t{ligand_chain}\t{water_chain}\n")
 
     n_tasks = len(pdbs)
-    slurm_script = 'ml_modelling/scripts/submit_relax_ml.sh'
+    slurm_script = str(PROJECT_ROOT / 'ml_modelling' / 'scripts' / 'submit_relax_ml.sh')
 
     cmd = [
         'sbatch',
@@ -551,7 +557,7 @@ DynamicAlignmentDebug = False
     # Run create_table.py
     cmd = [
         'python',
-        'docking/scripts/create_table.py',
+        str(PROJECT_ROOT / 'docking' / 'scripts' / 'create_table.py'),
         str(config_path)
     ]
 
@@ -603,7 +609,7 @@ def run_mutation_threading(
 
     cmd = [
         'python',
-        'scripts/thread_variant_to_pdb.py',
+        str(PROJECT_ROOT / 'scripts' / 'thread_variant_to_pdb.py'),
         '--template', template_pdb,
         '--signature', str(variant_signature),
         '--output', str(output_pdb),
@@ -666,7 +672,7 @@ def run_docking(
     enable_clustering = not use_slurm
 
     # Need A8T.params for loading the reference PDB with template ligand
-    params_file = "docking/ligand_alignment/files_for_PYR1_docking/A8T.params"
+    params_file = str(PROJECT_ROOT / "docking" / "ligand_alignment" / "files_for_PYR1_docking" / "A8T.params")
 
     with open(config_path, 'w') as f:
         f.write(f"""[DEFAULT]
@@ -713,7 +719,7 @@ ClusterRMSDCutoff = 0.75
             '--time', walltime,
             '--cpus-per-task', '4',
             '--mem', '8G',
-            'docking/scripts/submit_docking_mutant.sh',
+            str(PROJECT_ROOT / 'docking' / 'scripts' / 'submit_docking_mutant.sh'),
             str(config_path)
         ]
 
@@ -731,7 +737,7 @@ ClusterRMSDCutoff = 0.75
         # Run locally (single task, array index 0)
         cmd = [
             'python',
-            'docking/scripts/grade_conformers_mutant_docking.py',
+            str(PROJECT_ROOT / 'docking' / 'scripts' / 'grade_conformers_mutant_docking.py'),
             str(config_path),
             '0'  # Array index 0
         ]
@@ -768,7 +774,7 @@ def run_clustering(
 
     cmd = [
         'python',
-        'docking/scripts/cluster_docked_with_stats.py',
+        str(PROJECT_ROOT / 'docking' / 'scripts' / 'cluster_docked_with_stats.py'),
         '--input-dir', str(docking_output_dir),
         '--output-dir', str(cluster_output_dir),
         '--rmsd-cutoff', str(rmsd_cutoff),
@@ -1056,7 +1062,7 @@ def process_single_pair(
         logger.info("[6/7] Rosetta Relax")
         relax_dir = pair_cache / 'relax'
         relax_dir.mkdir(parents=True, exist_ok=True)
-        xml_path = 'docking/ligand_alignment/scripts/interface_scoring.xml'
+        xml_path = str(PROJECT_ROOT / 'docking' / 'ligand_alignment' / 'scripts' / 'interface_scoring.xml')
 
         # Find top docked PDBs
         top_pdbs = find_top_docked_pdbs(pair_cache, max_n=20)
