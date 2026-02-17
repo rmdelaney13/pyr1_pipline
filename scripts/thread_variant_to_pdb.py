@@ -325,6 +325,19 @@ def thread_variant(
             deletion_length=deletion_length
         )
 
+        # Repack sidechains to resolve clashes from mutations
+        logger.info("Repacking sidechains around mutated positions...")
+        scorefxn = pyrosetta.get_fa_scorefxn()
+        tf = pyrosetta.rosetta.core.pack.task.TaskFactory()
+        tf.push_back(pyrosetta.rosetta.core.pack.task.operation.RestrictToRepacking())
+        tf.push_back(pyrosetta.rosetta.core.pack.task.operation.IncludeCurrent())
+        packer = pyrosetta.rosetta.protocols.minimization_packing.PackRotamersMover(scorefxn)
+        packer.task_factory(tf)
+        score_before = scorefxn(pose)
+        packer.apply(pose)
+        score_after = scorefxn(pose)
+        logger.info(f"Repack complete: score {score_before:.1f} → {score_after:.1f}")
+
         # Save output
         logger.info(f"Saving mutated structure: {output_pdb}")
         os.makedirs(os.path.dirname(output_pdb) or '.', exist_ok=True)
