@@ -336,75 +336,89 @@ def score_ligand_only(sf, pose, lig_idx):
 # MAIN DEBUG LOOP
 # ═══════════════════════════════════════════════════════════════════
 
-def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
+def debug_docking(config_path=None, pair_dir=None, max_conformers=2, dump_pdbs=False):
     """Run diagnostic docking on a few conformers with full score breakdowns."""
 
-    config_path = os.path.abspath(config_path)
-    if not os.path.isfile(config_path):
-        logger.error(f"Config file does not exist: {config_path}")
-        sys.exit(1)
-
-    config = ConfigParser()
-    files_read = config.read(config_path)
-    if not files_read:
-        logger.error(f"ConfigParser could not read: {config_path}")
-        # Show first few lines for diagnosis
-        with open(config_path, "r") as fh:
-            head = fh.read(500)
-        logger.error(f"File contents (first 500 chars):\n{head}")
-        sys.exit(1)
-
-    logger.info(f"Config sections found: {config.sections()}")
-    if "mutant_docking" not in config:
-        with open(config_path, "r") as fh:
-            raw = fh.read()
-        logger.error(
-            f"Config file must have [mutant_docking] section. "
-            f"Found sections: {config.sections()}\n"
-            f"--- File contents ({len(raw)} bytes) ---\n{raw[:1000]}\n--- end ---"
-        )
-        sys.exit(1)
-
-    section = config["mutant_docking"]
-    def_section = config["DEFAULT"]
-
-    mutant_pdb = _cfg_str(section, "MutantPDB", "")
-    csv_file = _cfg_str(def_section, "CSVFileName", "")
-    path_to_conformers = _cfg_str(def_section, "PathToConformers", "")
-    chain_letter = _cfg_str(def_section, "ChainLetter", "A")
-    residue_number = _cfg_int(def_section, "ResidueNumber", 1)
-    lig_res_num = _cfg_int(def_section, "LigandResidueNumber", 1)
-    auto_align = _cfg_bool(def_section, "AutoGenerateAlignment", False)
-    pre_pdb = _cfg_str(def_section, "PrePDBFileName", "")
-
-    # Resolve relative paths: try CWD first, then project root (two levels up from
-    # docking/scripts/), then relative to the config file directory.
     project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
-    config_dir = os.path.dirname(os.path.abspath(config_path))
-    search_bases = [os.getcwd(), project_root, config_dir]
 
     def resolve_path(p):
+        """Resolve a potentially relative path against known base directories."""
         if not p or os.path.isabs(p):
             return p
         for base in search_bases:
             candidate = os.path.join(base, p)
             if os.path.exists(candidate):
                 return os.path.abspath(candidate)
-        return p  # return as-is if not found anywhere
+        return p
 
-    mutant_pdb = resolve_path(mutant_pdb)
-    csv_file = resolve_path(csv_file)
-    path_to_conformers = resolve_path(path_to_conformers)
-    pre_pdb = resolve_path(pre_pdb)
-    # Resolve params list paths too (done below after parsing)
+    # ── Build parameters from config file or --pair-dir ──
+    if pair_dir:
+        pair_dir = os.path.abspath(pair_dir)
+        search_bases = [os.getcwd(), project_root, pair_dir]
 
-    hbond_ideal = _cfg_float(section, "HBondDistanceIdeal", 2.8)
-    dist_buf = _cfg_float(section, "HBondDistanceIdealBuffer", 0.8)
+        mutant_pdb = os.path.join(pair_dir, "mutant.pdb")
+        csv_file = os.path.join(pair_dir, "alignment_table.csv")
+        path_to_conformers = os.path.join(pair_dir, "conformers_params")
+        pre_pdb = os.path.join(project_root, "docking", "ligand_alignment",
+                               "files_for_PYR1_docking", "3QN1_H2O.pdb")
+        params_file = os.path.join(project_root, "docking", "ligand_alignment",
+                                   "files_for_PYR1_docking", "A8T.params")
+        params_list = [params_file]
+        chain_letter = "X"
+        residue_number = 1
+        lig_res_num = 1
+        auto_align = False
+        hbond_ideal = 2.8
+        dist_buf = 0.8
+        max_pass_score = 100.0
+        output_base = os.path.join(pair_dir, "docking")
+
+    elif config_path:
+        config_path = os.path.abspath(config_path)
+        if not os.path.isfile(config_path):
+            logger.error(f"Config file does not exist: {config_path}")
+            sys.exit(1)
+
+        config = ConfigParser()
+        files_read = config.read(config_path)
+        if not files_read or "mutant_docking" not in config:
+            with open(config_path, "r") as fh:
+                raw = fh.read()
+            logger.error(
+                f"Config file empty or missing [mutant_docking] section.\n"
+                f"Found sections: {config.sections()}\n"
+                f"--- File contents ({len(raw)} bytes) ---\n{raw[:1000]}\n--- end ---\n"
+                f"TIP: Use --pair-dir instead to auto-discover files:\n"
+                f"  python debug_docking_scoring.py --pair-dir /path/to/test_002"
+            )
+            sys.exit(1)
+
+        section = config["mutant_docking"]
+        def_section = config["DEFAULT"]
+        config_dir = os.path.dirname(config_path)
+        search_bases = [os.getcwd(), project_root, config_dir]
+
+        mutant_pdb = resolve_path(_cfg_str(section, "MutantPDB", ""))
+        csv_file = resolve_path(_cfg_str(def_section, "CSVFileName", ""))
+        path_to_conformers = resolve_path(_cfg_str(def_section, "PathToConformers", ""))
+        pre_pdb = resolve_path(_cfg_str(def_section, "PrePDBFileName", ""))
+        chain_letter = _cfg_str(def_section, "ChainLetter", "X")
+        residue_number = _cfg_int(def_section, "ResidueNumber", 1)
+        lig_res_num = _cfg_int(def_section, "LigandResidueNumber", 1)
+        auto_align = _cfg_bool(def_section, "AutoGenerateAlignment", False)
+        hbond_ideal = _cfg_float(section, "HBondDistanceIdeal", 2.8)
+        dist_buf = _cfg_float(section, "HBondDistanceIdealBuffer", 0.8)
+        max_pass_score = _cfg_float(section, "MaxScore", 100.0)
+        params_list = [resolve_path(p) for p in
+                       _cfg_str(def_section, "ParamsList", "").split()]
+        output_base = config_dir
+
+    else:
+        logger.error("Must provide either a config file or --pair-dir")
+        sys.exit(1)
+
     hbond_min = max(0.0, hbond_ideal - dist_buf)
     hbond_max = hbond_ideal + dist_buf
-    max_pass_score = _cfg_float(section, "MaxScore", 100.0)
-
-    params_list = [resolve_path(p) for p in _cfg_str(def_section, "ParamsList", "").split()]
 
     # ── Print config summary ──
     print("\n" + "█" * 65)
@@ -514,8 +528,7 @@ def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
     packer = setup_packer_task()
 
     sf_cst = pyrosetta.get_fa_scorefxn()
-    sf_cst.set_weight(scoring.atom_pair_constraint,
-                      _cfg_float(section, "HBondConstraintWeight", 4.0))
+    sf_cst.set_weight(scoring.atom_pair_constraint, 4.0)
 
     min_mover = pyrosetta.rosetta.protocols.minimization_packing.MinMover()
     mm = pyrosetta.MoveMap()
@@ -523,9 +536,9 @@ def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
     min_mover.movemap(mm)
     min_mover.score_function(sf_cst)
 
-    rotation = _cfg_float(section, "Rotation", 25.0)
-    translation = _cfg_float(section, "Translation", 0.5)
-    max_tries = _cfg_int(section, "MaxPerturbTries", 30)
+    rotation = 25.0
+    translation = 0.5
+    max_tries = 30
 
     # Build collision grid (same as production)
     water_indices = set(
@@ -534,8 +547,8 @@ def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
     )
     backbone_grid = collision_check.CollisionGrid(
         mutant_pose,
-        bin_width=_cfg_float(section, "BinWidth", 1.0),
-        vdw_modifier=_cfg_float(section, "VDW_Modifier", 0.7),
+        bin_width=1.0,
+        vdw_modifier=0.7,
         include_sc=False,
         excluded_residues=water_indices,
     )
@@ -655,8 +668,8 @@ def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
             add_hbond_constraint_to_water(
                 copy_pose, lig_idx, acceptor_name,
                 dist_ideal=hbond_ideal,
-                dist_sd=_cfg_float(section, "HBondConstraintSD", 0.25),
-                capture_max=_cfg_float(section, "HBondConstraintCaptureMax", 8.0),
+                dist_sd=0.25,
+                capture_max=8.0,
             )
             auto_setup_water_constraints(copy_pose, lig_idx)
 
@@ -670,8 +683,8 @@ def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
             hbond_result = dpu.evaluate_hbond_geometry(
                 copy_pose, lig_idx, acceptor_name, neighbor_names,
                 hbond_min, hbond_max, hbond_ideal,
-                _cfg_float(section, "HBondDonorAngleMin", 120.0),
-                _cfg_float(section, "HBondAcceptorAngleMin", 90.0),
+                120.0,   # donor angle min
+                90.0,    # acceptor angle min
                 0.0,
             )
 
@@ -753,8 +766,8 @@ def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
             packed_pose, lig_idx,
             acceptor_name, [],
             hbond_min, hbond_max, hbond_ideal,
-            _cfg_float(section, "HBondDonorAngleMin", 120.0),
-            _cfg_float(section, "HBondAcceptorAngleMin", 90.0),
+            120.0,   # donor angle min
+            90.0,    # acceptor angle min
             0.0,
         )
         for k, v in sorted(postpack_hbond.items()):
@@ -762,7 +775,7 @@ def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
 
         # ── Dump PDBs ──
         if dump_pdbs:
-            debug_dir = os.path.join(os.path.dirname(config_path), "debug_pdbs")
+            debug_dir = os.path.join(output_base, "debug_pdbs")
             os.makedirs(debug_dir, exist_ok=True)
             pre_path = os.path.join(debug_dir, f"debug_conf{conf_idx}_prepack.pdb")
             post_path = os.path.join(debug_dir, f"debug_conf{conf_idx}_postpack.pdb")
@@ -804,11 +817,20 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("config", help="Docking config file (same as grade_conformers_mutant_docking.py)")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--config", help="Docking config file (INI format)")
+    group.add_argument("--pair-dir",
+                       help="Pair cache directory (auto-discovers mutant.pdb, "
+                            "alignment_table.csv, conformers_params/, etc.)")
     parser.add_argument("--max-conformers", type=int, default=2,
                         help="Number of conformers to analyze (default: 2)")
     parser.add_argument("--dump-pdbs", action="store_true",
                         help="Save debug PDBs for visualization in PyMOL")
     args = parser.parse_args()
 
-    debug_docking(args.config, args.max_conformers, args.dump_pdbs)
+    debug_docking(
+        config_path=args.config,
+        pair_dir=args.pair_dir,
+        max_conformers=args.max_conformers,
+        dump_pdbs=args.dump_pdbs,
+    )
