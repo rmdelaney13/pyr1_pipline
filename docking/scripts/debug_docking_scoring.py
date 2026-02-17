@@ -358,13 +358,34 @@ def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
     auto_align = _cfg_bool(def_section, "AutoGenerateAlignment", False)
     pre_pdb = _cfg_str(def_section, "PrePDBFileName", "")
 
+    # Resolve relative paths: try CWD first, then project root (two levels up from
+    # docking/scripts/), then relative to the config file directory.
+    project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+    search_bases = [os.getcwd(), project_root, config_dir]
+
+    def resolve_path(p):
+        if not p or os.path.isabs(p):
+            return p
+        for base in search_bases:
+            candidate = os.path.join(base, p)
+            if os.path.exists(candidate):
+                return os.path.abspath(candidate)
+        return p  # return as-is if not found anywhere
+
+    mutant_pdb = resolve_path(mutant_pdb)
+    csv_file = resolve_path(csv_file)
+    path_to_conformers = resolve_path(path_to_conformers)
+    pre_pdb = resolve_path(pre_pdb)
+    # Resolve params list paths too (done below after parsing)
+
     hbond_ideal = _cfg_float(section, "HBondDistanceIdeal", 2.8)
     dist_buf = _cfg_float(section, "HBondDistanceIdealBuffer", 0.8)
     hbond_min = max(0.0, hbond_ideal - dist_buf)
     hbond_max = hbond_ideal + dist_buf
     max_pass_score = _cfg_float(section, "MaxScore", 100.0)
 
-    params_list = _cfg_str(def_section, "ParamsList", "").split()
+    params_list = [resolve_path(p) for p in _cfg_str(def_section, "ParamsList", "").split()]
 
     # ── Print config summary ──
     print("\n" + "█" * 65)
