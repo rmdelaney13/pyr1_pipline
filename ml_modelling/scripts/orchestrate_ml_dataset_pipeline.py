@@ -6,11 +6,11 @@ CORRECT WORKFLOW (Direct-to-Mutant Docking):
 1. Generate ligand conformers (RDKit ETKDG + MMFF)
 2. Create alignment table (identify H-bond acceptor atoms for docking)
 3. Thread mutations onto WT PYR1 → mutant.pdb
-4. Dock conformers to MUTANT pocket (NO glycine shaving!)
-5. Cluster poses → extract statistics (convergence, clashes)
-6. Relax best pose (skip if severe clash)
-7. Run AF3 binary + ternary predictions
-8. Aggregate all features into ML table
+4. Backbone-constrained relax of mutant → mutant_relaxed.pdb
+5. Dock conformers to MUTANT pocket (NO glycine shaving!)
+6. Cluster poses → extract statistics (convergence, clashes)
+7. Relax best pose (skip if severe clash)
+8. Run AF3 binary + ternary predictions / Aggregate all features into ML table
 
 This script handles:
 - Workflow orchestration with dependency management
@@ -635,6 +635,93 @@ def run_mutation_threading(
         return False
 
 
+def run_constrained_relax(
+    input_pdb: Path,
+    output_pdb: Path,
+    params: Optional[Path] = None,
+    timeout: int = 1200
+) -> bool:
+    """
+    Run backbone-constrained FastRelax on a threaded mutant structure.
+
+    Applies CoordinateConstraints on backbone heavy atoms (N, CA, C, O)
+    with HarmonicFunc(0.0, 0.5 A SD) to relieve steric strain from
+    threading while preserving backbone geometry.
+
+    Args:
+        input_pdb: Threaded mutant PDB (protein-only, from threading stage)
+        output_pdb: Output relaxed PDB path
+        params: Optional .params file for extra_res_fa
+        timeout: Max seconds (default 1200 = 20 min)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    output_pdb.parent.mkdir(parents=True, exist_ok=True)
+
+    relax_script = str(PROJECT_ROOT / 'ml_modelling' / 'scripts' / 'constrained_relax.py')
+
+    cmd = [
+        'python',
+        relax_script,
+        str(input_pdb),
+        str(output_pdb),
+    ]
+
+    if params:
+        cmd.extend(['--params', str(params)])
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        logger.warning(f"  Constrained relax timed out ({timeout}s): {input_pdb.name}")
+        return False
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"  Constrained relax failed: {e.stderr[:200] if e.stderr else 'unknown error'}")
+        return False
+
+
+def run_constrained_relax_slurm(
+    input_pdb: Path,
+    output_pdb: Path,
+    params: Optional[Path] = None
+) -> Optional[str]:
+    """
+    Submit constrained relax to SLURM.
+
+    Args:
+        input_pdb: Threaded mutant PDB
+        output_pdb: Output relaxed PDB path
+        params: Optional .params file
+
+    Returns:
+        SLURM job ID if successful, None otherwise
+    """
+    slurm_script = str(PROJECT_ROOT / 'ml_modelling' / 'scripts' / 'submit_constrained_relax.sh')
+
+    cmd = [
+        'sbatch',
+        '--output', str(output_pdb.parent / 'constrained_relax_%j.log'),
+        '--error', str(output_pdb.parent / 'constrained_relax_%j.err'),
+        slurm_script,
+        str(input_pdb),
+        str(output_pdb),
+    ]
+
+    if params:
+        cmd.append(str(params))
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        job_id = result.stdout.strip().split()[-1]
+        logger.info(f"  Submitted constrained relax job: {job_id}")
+        return job_id
+    except subprocess.CalledProcessError as e:
+        logger.error(f"  SLURM constrained relax submission failed: {e.stderr}")
+        return None
+
+
 def run_docking(
     mutant_pdb: Path,
     conformers_sdf: Path,
@@ -924,7 +1011,7 @@ def process_single_pair(
     # STAGE 1: Conformer Generation
     # ──────────────────────────────────────────────────────────────
     if not is_stage_complete(pair_cache, 'conformers'):
-        logger.info("[1/7] Conformer Generation")
+        logger.info("[1/8] Conformer Generation")
         conformer_dir = pair_cache / 'conformers'
 
         success = run_conformer_generation(
@@ -940,7 +1027,7 @@ def process_single_pair(
             return {'status': 'FAILED', 'stage': 'conformers'}
 
     else:
-        logger.info("[1/7] Conformer Generation: ✓ CACHED")
+        logger.info("[1/8] Conformer Generation: ✓ CACHED")
 
     conformers_sdf = pair_cache / 'conformers' / 'conformers_final.sdf'
 
@@ -948,7 +1035,7 @@ def process_single_pair(
     # STAGE 2: Alignment Table Generation
     # ──────────────────────────────────────────────────────────────
     if not is_stage_complete(pair_cache, 'alignment_table'):
-        logger.info("[2/7] Alignment Table Generation")
+        logger.info("[2/8] Alignment Table Generation")
         alignment_csv = pair_cache / 'alignment_table.csv'
         conformers_params_dir = pair_cache / 'conformers_params'
 
@@ -964,7 +1051,7 @@ def process_single_pair(
             return {'status': 'FAILED', 'stage': 'alignment_table'}
 
     else:
-        logger.info("[2/7] Alignment Table Generation: ✓ CACHED")
+        logger.info("[2/8] Alignment Table Generation: ✓ CACHED")
 
     alignment_csv = pair_cache / 'alignment_table.csv'
     conformers_params_dir = pair_cache / 'conformers_params'
@@ -973,7 +1060,7 @@ def process_single_pair(
     # STAGE 3: Mutation Threading
     # ──────────────────────────────────────────────────────────────
     if not is_stage_complete(pair_cache, 'threading'):
-        logger.info("[3/7] Mutation Threading")
+        logger.info("[3/8] Mutation Threading")
         mutant_pdb = pair_cache / 'mutant.pdb'
 
         success = run_mutation_threading(
@@ -989,15 +1076,57 @@ def process_single_pair(
             return {'status': 'FAILED', 'stage': 'threading'}
 
     else:
-        logger.info("[3/7] Mutation Threading: ✓ CACHED")
+        logger.info("[3/8] Mutation Threading: ✓ CACHED")
 
     mutant_pdb = pair_cache / 'mutant.pdb'
 
     # ──────────────────────────────────────────────────────────────
-    # STAGE 4: Docking to Mutant Pocket
+    # STAGE 4: Backbone-Constrained Relax of Threaded Mutant
+    # ──────────────────────────────────────────────────────────────
+    mutant_relaxed_pdb = pair_cache / 'mutant_relaxed.pdb'
+    a8t_params = str(PROJECT_ROOT / 'docking' / 'ligand_alignment' / 'files_for_PYR1_docking' / 'A8T.params')
+
+    if not is_stage_complete(pair_cache, 'constrained_relax'):
+        # Check for SLURM re-entry: output file exists from a previous SLURM job
+        if mutant_relaxed_pdb.exists():
+            logger.info("[4/8] Constrained Relax: ✓ DONE (SLURM re-entry)")
+            mark_stage_complete(pair_cache, 'constrained_relax', str(mutant_relaxed_pdb))
+        else:
+            logger.info("[4/8] Constrained Relax")
+
+            if use_slurm:
+                job_id = run_constrained_relax_slurm(
+                    input_pdb=mutant_pdb,
+                    output_pdb=mutant_relaxed_pdb,
+                    params=Path(a8t_params),
+                )
+                if job_id:
+                    logger.info(f"  ⏳ SLURM job submitted: {job_id}")
+                    logger.info(f"  → Re-run orchestrator after job finishes")
+                    return {'status': 'SLURM_SUBMITTED', 'job_id': job_id, 'stage': 'constrained_relax'}
+                else:
+                    return {'status': 'FAILED', 'stage': 'constrained_relax'}
+            else:
+                success = run_constrained_relax(
+                    input_pdb=mutant_pdb,
+                    output_pdb=mutant_relaxed_pdb,
+                    params=Path(a8t_params),
+                )
+                if success:
+                    mark_stage_complete(pair_cache, 'constrained_relax', str(mutant_relaxed_pdb))
+                else:
+                    return {'status': 'FAILED', 'stage': 'constrained_relax'}
+    else:
+        logger.info("[4/8] Constrained Relax: ✓ CACHED")
+
+    # Use relaxed mutant for all downstream stages
+    mutant_pdb = mutant_relaxed_pdb
+
+    # ──────────────────────────────────────────────────────────────
+    # STAGE 5: Docking to Mutant Pocket
     # ──────────────────────────────────────────────────────────────
     if not is_stage_complete(pair_cache, 'docking'):
-        logger.info("[4/7] Docking to Mutant")
+        logger.info("[5/8] Docking to Mutant")
         docking_dir = pair_cache / 'docking'
 
         job_id = run_docking(
@@ -1027,7 +1156,7 @@ def process_single_pair(
             return {'status': 'FAILED', 'stage': 'docking'}
 
     else:
-        logger.info("[4/7] Docking to Mutant: ✓ CACHED")
+        logger.info("[5/8] Docking to Mutant: ✓ CACHED")
 
     docking_dir = pair_cache / 'docking'
 
@@ -1047,38 +1176,38 @@ def process_single_pair(
             logger.warning("  Could not extract docking stats (no geometry CSV found)")
 
     # ──────────────────────────────────────────────────────────────
-    # STAGE 5: Clustering with Statistics
+    # STAGE 6: Clustering with Statistics
     # ──────────────────────────────────────────────────────────────
     # Check if cluster representatives already exist (from in-loop clustering
     # during docking, or from a previous cluster_docked_post_array.py run)
     if is_stage_complete(pair_cache, 'clustering'):
-        logger.info("[5/7] Clustering & Statistics: ✓ CACHED")
+        logger.info("[6/8] Clustering & Statistics: ✓ CACHED")
     else:
         # Check if geometry CSVs contain saved_cluster=True rows (in-loop clustering)
         has_cluster_reps = bool(find_top_docked_pdbs(pair_cache, max_n=1))
         if has_cluster_reps:
-            logger.info("[5/7] Clustering & Statistics: ✓ DONE (in-loop clustering detected)")
+            logger.info("[6/8] Clustering & Statistics: ✓ DONE (in-loop clustering detected)")
             mark_stage_complete(pair_cache, 'clustering', str(docking_dir))
         elif use_slurm:
-            logger.info("[5/7] Clustering & Statistics: PENDING")
+            logger.info("[6/8] Clustering & Statistics: PENDING")
             logger.info("  → No cluster reps found. Run cluster_docked_post_array.py first")
             return {'status': 'NEEDS_CLUSTERING', 'stage': 'clustering'}
         else:
-            logger.info("[5/7] Clustering & Statistics: ✓ DONE (in-loop)")
+            logger.info("[6/8] Clustering & Statistics: ✓ DONE (in-loop)")
             mark_stage_complete(pair_cache, 'clustering', str(docking_dir))
 
     cluster_dir = pair_cache / 'docking'  # Use docking dir since clustering is in-loop
 
     # ──────────────────────────────────────────────────────────────
-    # STAGE 6: Relax (skip if severe clash)
+    # STAGE 7: Relax (skip if severe clash)
     # ──────────────────────────────────────────────────────────────
     if should_skip_relax(cluster_dir, pair_cache=pair_cache):
-        logger.info("[6/7] Rosetta Relax: SKIPPED (clash detected)")
+        logger.info("[7/8] Rosetta Relax: SKIPPED (clash detected)")
         mark_stage_complete(pair_cache, 'relax', None)
         update_stage_metadata(pair_cache, 'relax', {'skipped_reason': 'clash'})
 
     elif not is_stage_complete(pair_cache, 'relax'):
-        logger.info("[6/7] Rosetta Relax")
+        logger.info("[7/8] Rosetta Relax")
         relax_dir = pair_cache / 'relax'
         relax_dir.mkdir(parents=True, exist_ok=True)
         xml_path = str(PROJECT_ROOT / 'docking' / 'ligand_alignment' / 'scripts' / 'interface_scoring.xml')
@@ -1167,12 +1296,12 @@ def process_single_pair(
                     update_stage_metadata(pair_cache, 'relax', {'skipped_reason': 'all_failed'})
 
     else:
-        logger.info("[6/7] Rosetta Relax: ✓ CACHED")
+        logger.info("[7/8] Rosetta Relax: ✓ CACHED")
 
     # ──────────────────────────────────────────────────────────────
-    # STAGE 7: AF3 Predictions
+    # STAGE 8: AF3 Predictions
     # ──────────────────────────────────────────────────────────────
-    logger.info("[7/7] AF3 Predictions")
+    logger.info("[8/8] AF3 Predictions")
     logger.warning("  (AF3 not yet implemented in orchestrator)")
 
     logger.info(f"✓ Pair {pair_id} processed successfully\n")
