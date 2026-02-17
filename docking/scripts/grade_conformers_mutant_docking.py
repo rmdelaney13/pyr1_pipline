@@ -12,9 +12,11 @@ Workflow:
 2. Load conformer CSV table with alignment atoms (from create_table.py)
 3. Align conformers to pocket using SVD
 4. Perturb + minimize with water H-bond constraints
-5. Filter by H-bond geometry (pre-pack and post-pack)
-6. Score and cluster by RMSD
-7. Output geometry diagnostics CSV
+5. Pack sidechains
+6. Post-pack constrained re-minimization (ligand jump + nearby sidechain chi)
+7. Filter by H-bond geometry (post-pack strict ideal window)
+8. Score and cluster by RMSD
+9. Output geometry diagnostics CSV
 
 Usage:
   Single job:   python grade_conformers_mutant_docking.py config.txt
@@ -859,13 +861,67 @@ def align_and_dock_conformers(
             # Pack sidechains
             try:
                 packer.apply(copy_pose)
-                score = sf_all(copy_pose)
-                relative_score = score - baseline_score
             except Exception as exc:
                 logger.warning(f"Packing failed for conformer {conf_idx}: {exc}")
                 stats["total"] += 1
                 continue
-    
+
+            # Post-pack constrained re-minimization: allow ligand + nearby
+            # sidechains to co-optimize around the newly packed conformation.
+            # This mirrors the glycine-shaved approach where constraints pull the
+            # ligand into proper H-bond geometry after sidechains have moved.
+            if params.get("enable_postpack_remin", True):
+                try:
+                    copy_pose.constraint_set().clear()
+
+                    # Re-apply water H-bond constraints to current conformation
+                    if params.get("use_closest_acceptor", True) and \
+                       params.get("dynamic_water_pull_constraint", True):
+                        add_hbond_constraint_to_water(
+                            copy_pose, lig_idx, acceptor_name,
+                            dist_ideal=params['hbond_ideal'],
+                            dist_sd=params.get('hbond_constraint_sd', 0.3),
+                            capture_max=params.get('hbond_constraint_capture_max', 8.0),
+                        )
+                    auto_setup_water_constraints(copy_pose, lig_idx)
+
+                    # Build movemap: ligand jump + chi for nearby sidechains
+                    postpack_mm = pyrosetta.MoveMap()
+                    postpack_mm.set_jump(False)
+                    postpack_mm.set_jump(lig_jump_num, True)
+
+                    remin_shell = float(params.get("postpack_remin_shell_radius", 8.0))
+                    lig_nbr_xyz = copy_pose.residue(lig_idx).nbr_atom_xyz()
+                    n_chi_enabled = 0
+                    for res_i in range(1, copy_pose.total_residue() + 1):
+                        if res_i == lig_idx:
+                            continue
+                        res = copy_pose.residue(res_i)
+                        if res.is_water() or res.is_ligand():
+                            continue
+                        if res.nbr_atom_xyz().distance(lig_nbr_xyz) <= remin_shell:
+                            postpack_mm.set_chi(res_i, True)
+                            n_chi_enabled += 1
+
+                    postpack_min = pyrosetta.rosetta.protocols.minimization_packing.MinMover()
+                    postpack_min.movemap(postpack_mm)
+                    postpack_min.score_function(sf_cst)
+                    postpack_min.apply(copy_pose)
+
+                    if conf_idx == 1 or conf_idx % debug_every == 0:
+                        logger.info(
+                            "Post-pack re-min: conformer %d, %d chi-flexible residues within %.1f A",
+                            conf_idx, n_chi_enabled, remin_shell,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Post-pack re-minimization failed for conformer %d: %s",
+                        conf_idx, exc,
+                    )
+
+            score = sf_all(copy_pose)
+            relative_score = score - baseline_score
+
             # Post-pack H-bond validation (CRITICAL for ML dataset quality)
             try:
                 postpack_hbond_result = dpu.evaluate_hbond_geometry(
@@ -1072,6 +1128,8 @@ def main():
         'enable_pocket_filter': _cfg_bool(section, "EnablePocketProximityFilter", True),
         'bin_width': _cfg_float(section, "BinWidth", 1.0),
         'vdw_modifier': _cfg_float(section, "VDW_Modifier", 0.7),
+        'enable_postpack_remin': _cfg_bool(section, "EnablePostPackReMinimization", True),
+        'postpack_remin_shell_radius': _cfg_float(section, "PostPackReMinShellRadius", 8.0),
     }
 
     # Validate inputs
@@ -1215,6 +1273,11 @@ def main():
                 if run_params['require_acceptor_ideal_window']
                 else ""
             ),
+        )
+    if run_params['enable_postpack_remin']:
+        logger.info(
+            "Post-pack re-minimization: enabled, shell_radius=%.1f A (ligand jump + sidechain chi)",
+            run_params['postpack_remin_shell_radius'],
         )
     if run_params['enable_pocket_filter'] and run_params['pocket_center'] is not None:
         pc = run_params['pocket_center']
