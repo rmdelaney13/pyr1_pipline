@@ -1,4 +1,4 @@
 pair_id,ligand_name,ligand_smiles,variant_name,variant_signature,label,label_tier
-test_001,abscisic_Acid,CC1=CC(=O)CC(C1/C=C/C(=C/C(=O)O)/C)(C)C,wt,,1,positive
-test_002,nitazene,CCN(CC)CCN1C2=C(C=C(C=C2)[N+](=O)[O-])N=C1CC3=CC=CC=C3,PYR1^nitav2,59Q;81I;83L;92M;108V;120A;122G;141D;159H;160V,1,positive
+test_001,nitazene,CCN(CC)CCN1C2=C(C=C(C=C2)[N+](=O)[O-])N=C1CC3=CC=CC=C3,PYR1^nitav2,59Q;81I;83L;92M;108V;120A;122G;141D;159H;160V,1,positive
+test_002,abscisic_Acid,CC1=CC(=O)CC(C1/C=C/C(=C/C(=O)O)/C)(C)C,wt,,1,positive
 test_003,Lithocholic_Acid,C[C@H](CCC(=O)O)[C@H]1CC[C@@H]2[C@@]1(CC[C@H]3[C@H]2CC[C@H]4[C@@]3(CC[C@H](C4)O)C)C,seq16_designed,59V;81D;83L;92M;94V;108A;110V;117V;120L;122T;141K;159I;160L;163G;164V;167I,1,positive
