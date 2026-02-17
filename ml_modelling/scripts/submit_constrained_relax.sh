@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=cst_relax
+#SBATCH --job-name=repack_mut
 #SBATCH --partition=amilan
 #SBATCH --qos=normal
 #SBATCH --account=ucb472_asc2
-#SBATCH --time=00:20:00
-#SBATCH --mem=8G
+#SBATCH --time=00:05:00
+#SBATCH --mem=4G
 #SBATCH --cpus-per-task=1
 
-# Shell-restricted backbone-constrained FastRelax for threaded mutant structures.
+# Sidechain repack around mutation sites (PackRotamersMover, not FastRelax).
 # Single job (not array) - one mutant PDB per pair.
 #
 # Usage:
@@ -37,7 +37,7 @@ if [ ! -f "$INPUT_PDB" ]; then
     exit 1
 fi
 
-echo "Constrained Relax"
+echo "Sidechain Repack"
 echo "  Input:     $INPUT_PDB"
 echo "  Output:    $OUTPUT_PDB"
 echo "  Mutations: $MUTATIONS"

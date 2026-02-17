@@ -640,21 +640,20 @@ def run_constrained_relax(
     output_pdb: Path,
     variant_signature: str,
     params: Optional[Path] = None,
-    timeout: int = 1200
+    timeout: int = 300
 ) -> bool:
     """
-    Run shell-restricted backbone-constrained FastRelax on a threaded mutant.
+    Repack sidechains in a 10 A shell around mutated residues.
 
-    Only relaxes sidechains within a 10 A shell around mutated residues.
-    Backbone is constrained with CoordinateConstraints; everything outside
-    the shell is frozen.
+    Uses PackRotamersMover (not FastRelax) for fast discrete rotamer
+    optimization. Completes in seconds.
 
     Args:
         input_pdb: Threaded mutant PDB (protein-only, from threading stage)
-        output_pdb: Output relaxed PDB path
+        output_pdb: Output repacked PDB path
         variant_signature: Mutation signature (e.g., "59K;120A;160G")
         params: Optional .params file for extra_res_fa
-        timeout: Max seconds (default 1200 = 20 min)
+        timeout: Max seconds (default 300 = 5 min)
 
     Returns:
         True if successful, False otherwise
@@ -692,11 +691,11 @@ def run_constrained_relax_slurm(
     params: Optional[Path] = None
 ) -> Optional[str]:
     """
-    Submit shell-restricted constrained relax to SLURM.
+    Submit sidechain repack to SLURM.
 
     Args:
         input_pdb: Threaded mutant PDB
-        output_pdb: Output relaxed PDB path
+        output_pdb: Output repacked PDB path
         variant_signature: Mutation signature (e.g., "59K;120A;160G")
         params: Optional .params file
 
