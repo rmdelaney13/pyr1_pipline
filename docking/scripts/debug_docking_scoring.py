@@ -339,11 +339,27 @@ def score_ligand_only(sf, pose, lig_idx):
 def debug_docking(config_path, max_conformers=2, dump_pdbs=False):
     """Run diagnostic docking on a few conformers with full score breakdowns."""
 
-    config = ConfigParser()
-    config.read(config_path)
+    config_path = os.path.abspath(config_path)
+    if not os.path.isfile(config_path):
+        logger.error(f"Config file does not exist: {config_path}")
+        sys.exit(1)
 
+    config = ConfigParser()
+    files_read = config.read(config_path)
+    if not files_read:
+        logger.error(f"ConfigParser could not read: {config_path}")
+        # Show first few lines for diagnosis
+        with open(config_path, "r") as fh:
+            head = fh.read(500)
+        logger.error(f"File contents (first 500 chars):\n{head}")
+        sys.exit(1)
+
+    logger.info(f"Config sections found: {config.sections()}")
     if "mutant_docking" not in config:
-        logger.error("Config file must have [mutant_docking] section")
+        logger.error(
+            f"Config file must have [mutant_docking] section. "
+            f"Found sections: {config.sections()}"
+        )
         sys.exit(1)
 
     section = config["mutant_docking"]
