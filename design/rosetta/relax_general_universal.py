@@ -388,12 +388,22 @@ def constrain_water_network(pose, water_res, ligand_res, ligand_o_atom="O3"):
         add_distance_constraint(water_res, "H2", ligand_res, ligand_o_atom)
 
 
-def apply_interface_relax(pose, scorefxn):
+def apply_interface_relax(pose, scorefxn, water_chain="D"):
     """
     Apply FastRelax to interface region.
+    Water is kept FIXED (no bb/chi/jump movement) to preserve pocket geometry.
     """
     ligand_sel = ChainSelector("B")
-    water_sel = ChainSelector("D")
+
+    # Build water selector: try chain first, then residue name
+    water_names = {'TP3', 'HOH', 'WAT', 'TIP', 'TIP3'}
+    water_residues = set()
+    pdb_info = pose.pdb_info()
+    for i in range(1, pose.total_residue() + 1):
+        if pdb_info.chain(i) == water_chain:
+            water_residues.add(i)
+        elif pose.residue(i).name3().strip() in water_names:
+            water_residues.add(i)
 
     near10 = NeighborhoodResidueSelector(ligand_sel, 10.0)
     nearA10 = AndResidueSelector(near10, ChainSelector("A"))
@@ -402,7 +412,11 @@ def apply_interface_relax(pose, scorefxn):
     mm = MoveMap()
     total = pose.total_residue()
     for i in range(1, total + 1):
-        if nearA10.apply(pose)[i] or nearC10.apply(pose)[i] or water_sel.apply(pose)[i]:
+        # Water is FIXED - do not allow movement
+        if i in water_residues:
+            mm.set_bb(i, False)
+            mm.set_chi(i, False)
+        elif nearA10.apply(pose)[i] or nearC10.apply(pose)[i]:
             mm.set_bb(i, True)
             mm.set_chi(i, True)
         else:
@@ -412,7 +426,8 @@ def apply_interface_relax(pose, scorefxn):
     ft = pose.fold_tree()
     for j in range(1, ft.num_jump() + 1):
         down = ft.downstream_jump_residue(j)
-        if ligand_sel.apply(pose)[down] or water_sel.apply(pose)[down]:
+        # Only allow ligand jump to move, NOT water
+        if ligand_sel.apply(pose)[down] and down not in water_residues:
             mm.set_jump(j, True)
 
     tf = TaskFactory()
@@ -499,9 +514,27 @@ def main():
 
     # Optional: Water constraints (system-specific)
     if not args.skip_water_constraints:
-        try:
-            wat_res_idx = next(i for i in range(1, pose.total_residue() + 1)
-                              if pdb_info.chain(i) == args.water_chain)
+        # Find water: first by chain, then by residue name (TP3, HOH, WAT)
+        wat_res_idx = None
+        water_names = {'TP3', 'HOH', 'WAT', 'TIP', 'TIP3'}
+
+        # Method 1: search by chain letter
+        for i in range(1, pose.total_residue() + 1):
+            if pdb_info.chain(i) == args.water_chain:
+                wat_res_idx = i
+                break
+
+        # Method 2: search by residue name (TP3/HOH/WAT)
+        if wat_res_idx is None:
+            for i in range(1, pose.total_residue() + 1):
+                if pose.residue(i).name3().strip() in water_names:
+                    wat_res_idx = i
+                    break
+
+        if wat_res_idx is not None:
+            water_res = pose.residue(wat_res_idx)
+            print(f"Found water at residue {wat_res_idx} "
+                  f"(chain={pdb_info.chain(wat_res_idx)}, name={water_res.name3().strip()})")
             # Try to find which oxygen interacts with water (heuristic)
             water_lig_atom = None
             for atom_name in polar_atoms.keys():
@@ -511,8 +544,8 @@ def main():
             if water_lig_atom:
                 constrain_water_network(pose, wat_res_idx, lig_res_idx, water_lig_atom)
                 print(f"Applied water constraints using ligand atom {water_lig_atom}")
-        except StopIteration:
-            print("No water found, skipping water constraints")
+        else:
+            print("No water found (checked chain and residue names), skipping water constraints")
 
     # Relax
     print("\nRunning relax...")

@@ -600,7 +600,9 @@ def align_and_dock_conformers(
 
     min_mover = pyrosetta.rosetta.protocols.minimization_packing.MinMover()
     mm = pyrosetta.MoveMap()
-    mm.set_jump(True)
+    # Don't enable all jumps - we'll selectively enable only the ligand jump
+    # per iteration to prevent water from moving
+    mm.set_jump(False)
     min_mover.movemap(mm)
     min_mover.score_function(sf_cst)
 
@@ -723,6 +725,15 @@ def align_and_dock_conformers(
 
                 # Auto-constrain water network
                 auto_setup_water_constraints(copy_pose, lig_idx)
+
+                # Enable ONLY the ligand's jump for minimization (keep water fixed)
+                mm.set_jump(False)  # Reset all jumps
+                ft = copy_pose.fold_tree()
+                for jj in range(1, ft.num_jump() + 1):
+                    downstream = ft.downstream_jump_residue(jj)
+                    if downstream == lig_idx:
+                        mm.set_jump(jj, True)
+                        break
 
                 # Minimize with constraints
                 t_min0 = time.time()
