@@ -1425,8 +1425,8 @@ def analyze_af3_outputs(cache_dir: Path, af3_staging_dir: Path, af3_args: Dict) 
     Returns:
         Number of pairs analyzed
     """
-    from prepare_af3_ml import extract_af3_metrics, compute_ligand_rmsd_to_rosetta, \
-        find_best_relaxed_pdb, write_summary_json, compute_binary_ternary_ligand_rmsd
+    from prepare_af3_ml import extract_af3_metrics, compute_min_ligand_rmsd_to_rosetta, \
+        find_all_relaxed_pdbs, write_summary_json, compute_binary_ternary_ligand_rmsd
 
     analyzed = 0
 
@@ -1474,13 +1474,13 @@ def analyze_af3_outputs(cache_dir: Path, af3_staging_dir: Path, af3_args: Dict) 
             if not cif_path.exists():
                 cif_path = af3_output_dir / name / f"{name}_model.cif"
 
-            # Compute ligand RMSD to Rosetta template
+            # Compute min ligand RMSD across all relaxed Rosetta structures
             ligand_rmsd = None
-            best_pdb = find_best_relaxed_pdb(str(pair_dir))
-            if best_pdb and cif_path.exists():
-                ligand_rmsd = compute_ligand_rmsd_to_rosetta(
+            relaxed_pdbs = find_all_relaxed_pdbs(str(pair_dir))
+            if relaxed_pdbs and cif_path.exists():
+                ligand_rmsd = compute_min_ligand_rmsd_to_rosetta(
                     af3_cif_path=str(cif_path),
-                    rosetta_pdb_path=str(best_pdb),
+                    relaxed_pdbs=relaxed_pdbs,
                 )
 
             mode_results[mode] = (metrics, ligand_rmsd, cif_path if cif_path.exists() else None)

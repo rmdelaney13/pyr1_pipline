@@ -678,8 +678,22 @@ def compute_binary_ternary_ligand_rmsd(
 
 
 # ═══════════════════════════════════════════════════════════════════
-# BEST RELAXED PDB FINDER
+# RELAXED PDB FINDERS
 # ═══════════════════════════════════════════════════════════════════
+
+def find_all_relaxed_pdbs(pair_cache: str) -> List[Path]:
+    """
+    Find all relaxed PDBs in the relax directory.
+
+    Returns:
+        List of Paths to relaxed PDBs (may be empty)
+    """
+    relax_dir = Path(pair_cache) / 'relax'
+    if not relax_dir.exists():
+        return []
+    return sorted(p for p in relax_dir.glob('relaxed_*.pdb')
+                  if '_score' not in p.stem)
+
 
 def find_best_relaxed_pdb(pair_cache: str) -> Optional[Path]:
     """
@@ -731,6 +745,40 @@ def find_best_relaxed_pdb(pair_cache: str) -> Optional[Path]:
             continue
 
     return best_pdb
+
+
+def compute_min_ligand_rmsd_to_rosetta(
+    af3_cif_path: str,
+    relaxed_pdbs: List[Path],
+    protein_chain: str = 'A',
+    af3_ligand_chain: str = 'B',
+) -> Optional[float]:
+    """
+    Compute ligand RMSD from AF3 prediction to each relaxed Rosetta PDB,
+    return the minimum. This finds the Rosetta pose that best agrees with AF3.
+
+    Returns:
+        Minimum ligand RMSD in Angstroms, or None if all fail
+    """
+    rmsds = []
+    for pdb_path in relaxed_pdbs:
+        rmsd = compute_ligand_rmsd_to_rosetta(
+            af3_cif_path=af3_cif_path,
+            rosetta_pdb_path=str(pdb_path),
+            protein_chain=protein_chain,
+            af3_ligand_chain=af3_ligand_chain,
+        )
+        if rmsd is not None:
+            rmsds.append(rmsd)
+
+    if not rmsds:
+        return None
+
+    min_rmsd = min(rmsds)
+    logger.info(f"  Ligand RMSD to Rosetta: min={min_rmsd:.3f} A "
+                f"(across {len(rmsds)}/{len(relaxed_pdbs)} structures, "
+                f"mean={sum(rmsds)/len(rmsds):.3f})")
+    return min_rmsd
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -838,23 +886,21 @@ def cmd_analyze(args):
                      f"pLDDT_lig={metrics.get('mean_pLDDT_ligand')}, "
                      f"PAE={metrics.get('mean_interface_PAE')}")
 
-        # Compute ligand RMSD if Rosetta reference available
+        # Compute min ligand RMSD across all relaxed Rosetta structures
         ligand_rmsd = None
         cif_path = _find_af3_cif(af3_dir, args.pair_id, mode)
 
         if args.pair_cache:
-            best_pdb = find_best_relaxed_pdb(args.pair_cache)
-            if best_pdb and cif_path:
-                ligand_rmsd = compute_ligand_rmsd_to_rosetta(
+            relaxed_pdbs = find_all_relaxed_pdbs(args.pair_cache)
+            if relaxed_pdbs and cif_path:
+                ligand_rmsd = compute_min_ligand_rmsd_to_rosetta(
                     af3_cif_path=str(cif_path),
-                    rosetta_pdb_path=str(best_pdb),
+                    relaxed_pdbs=relaxed_pdbs,
                     protein_chain=args.protein_chain,
                     af3_ligand_chain=args.ligand_chain,
                 )
-                if ligand_rmsd is not None:
-                    logger.info(f"  Ligand RMSD to Rosetta: {ligand_rmsd:.3f} A")
-            elif not best_pdb:
-                logger.warning(f"  No relaxed PDB found for RMSD calculation")
+            elif not relaxed_pdbs:
+                logger.warning(f"  No relaxed PDBs found for RMSD calculation")
             elif not cif_path:
                 logger.warning(f"  AF3 model CIF not found for {mode}")
 
