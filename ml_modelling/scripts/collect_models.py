@@ -6,6 +6,8 @@ Usage:
     python collect_models.py --cache-dir /scratch/alpine/ryde3462/ml_dataset_test \
                              --output-dir ./collected_models
 """
+from __future__ import annotations
+
 import argparse
 import shutil
 import json
