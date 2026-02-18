@@ -228,12 +228,38 @@ def extract_docking_stats(docking_dir: Path) -> Optional[Dict]:
 
 def find_top_docked_pdbs(pair_cache: Path, max_n: int = 20) -> List[Path]:
     """
-    Find top N docked PDBs by score from geometry CSV (saved_cluster=True rows).
-    Fallback: glob *rep_*.pdb files from docking dir.
+    Find top N docked PDBs for relaxation, preferring global cluster representatives.
+
+    Priority:
+      1. Global clustering reps (cluster_*.pdb from run_clustering), sorted by best_score
+      2. Geometry CSV saved_cluster=True rows, sorted by score
+      3. Glob fallback (*rep_*.pdb, then *.pdb)
     """
     docking_dir = pair_cache / 'docking'
 
-    # Try parsing geometry CSV for saved cluster PDBs
+    # --- Source 1: Global cluster representatives (from run_clustering) ---
+    stats_json = docking_dir / 'clustering_stats.json'
+    if stats_json.exists():
+        try:
+            with open(stats_json, 'r') as f:
+                stats = json.load(f)
+            clusters = stats.get('clusters', [])
+            # Sort by best_score (ascending = lowest energy first)
+            clusters_sorted = sorted(clusters, key=lambda c: c.get('best_score', float('inf')))
+
+            pdbs = []
+            for c in clusters_sorted[:max_n]:
+                pdb_path = docking_dir / f"cluster_{c['cluster_id']}.pdb"
+                if pdb_path.exists():
+                    pdbs.append(pdb_path)
+            if pdbs:
+                logger.info(f"  Found {len(pdbs)} cluster reps from global clustering "
+                            f"({len(clusters)} total clusters)")
+                return pdbs
+        except Exception as e:
+            logger.warning(f"  Failed to read clustering_stats.json: {e}")
+
+    # --- Source 2: Geometry CSV saved_cluster=True rows ---
     csv_files = sorted(docking_dir.glob('hbond_geometry_summary_array*.csv'))
     single_csv = docking_dir / 'hbond_geometry_summary.csv'
     if not csv_files and single_csv.exists():
@@ -266,7 +292,7 @@ def find_top_docked_pdbs(pair_cache: Path, max_n: int = 20) -> List[Path]:
                     logger.info(f"  Found {len(pdbs)} top docked PDBs from geometry CSV")
                     return pdbs
 
-    # Fallback: glob for cluster representative PDBs
+    # --- Source 3: Glob fallback ---
     rep_pdbs = sorted(docking_dir.glob('*rep_*.pdb'))
     if not rep_pdbs:
         rep_pdbs = sorted(docking_dir.glob('*.pdb'))
