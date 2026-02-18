@@ -793,7 +793,7 @@ OutputDir = {output_dir}
 DockingRepeats = {docking_repeats}
 ArrayTaskCount = {array_tasks}
 EnablePoseClusteringInArrayTask = {str(enable_clustering)}
-ClusterRMSDCutoff = 0.75
+ClusterRMSDCutoff = 2.0
 EnablePocketProximityFilter = True
 PocketMaxDistance = 5.0
 MaxScore = -200
@@ -861,51 +861,84 @@ UseRelativeScoring = False
 
 def run_clustering(
     docking_output_dir: Path,
-    cluster_output_dir: Path,
     rmsd_cutoff: float = 2.0
 ) -> bool:
     """
-    Cluster docked poses and extract statistics.
+    Global re-clustering of docked poses with statistics for ML features.
+
+    Reads geometry CSVs from the docking directory, filters to rows with
+    valid PDB files (cluster reps from in-loop clustering), and runs global
+    clustering to produce clustering_stats.json with convergence metrics.
 
     Args:
-        docking_output_dir: Directory with docking results
-        cluster_output_dir: Output directory for clustering
+        docking_output_dir: Directory with docking results (geometry CSVs + PDBs)
         rmsd_cutoff: RMSD clustering cutoff (Å)
 
     Returns:
         True if successful, False otherwise
     """
-    cluster_output_dir.mkdir(parents=True, exist_ok=True)
+    import tempfile
 
-    logger.info(f"  Clustering docked poses (RMSD cutoff {rmsd_cutoff} Å)...")
+    # Read geometry CSVs
+    csv_files = sorted(docking_output_dir.glob('hbond_geometry_summary*.csv'))
+    if not csv_files:
+        logger.warning("  No geometry CSVs found for clustering")
+        return False
 
-    cmd = [
-        'python',
-        str(PROJECT_ROOT / 'docking' / 'scripts' / 'cluster_docked_with_stats.py'),
-        '--input-dir', str(docking_output_dir),
-        '--output-dir', str(cluster_output_dir),
-        '--rmsd-cutoff', str(rmsd_cutoff),
-        '--stats-csv', 'clustering_stats.csv'
-    ]
+    dfs = []
+    for csv_file in csv_files:
+        try:
+            dfs.append(pd.read_csv(csv_file))
+        except Exception as e:
+            logger.warning(f"  Failed to read {csv_file}: {e}")
+    if not dfs:
+        return False
+
+    all_rows = pd.concat(dfs, ignore_index=True)
+
+    # Filter to rows with existing PDB files (these are the in-loop cluster reps)
+    valid = all_rows.dropna(subset=['output_pdb'])
+    valid = valid[valid['output_pdb'].apply(lambda p: Path(str(p)).exists())]
+
+    if len(valid) == 0:
+        logger.warning("  No valid PDB files found for global re-clustering")
+        return False
+
+    logger.info(f"  Global re-clustering {len(valid)} poses (RMSD cutoff {rmsd_cutoff} Å)...")
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        logger.info(f"  ✓ Clustering complete")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Write filtered CSV for clustering script
+            filtered_csv = Path(tmpdir) / 'poses_0.csv'
+            valid.to_csv(filtered_csv, index=False)
 
-        # Check cluster statistics
-        stats_json = cluster_output_dir / 'clustering_stats.json'
+            cmd = [
+                'python',
+                str(PROJECT_ROOT / 'docking' / 'scripts' / 'cluster_docked_with_stats.py'),
+                '--input-dir', tmpdir,
+                '--output-dir', str(docking_output_dir),
+                '--rmsd-cutoff', str(rmsd_cutoff),
+                '--pattern-prefix', 'poses_',
+                '--save-all-clusters',
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        # Verify output
+        stats_json = docking_output_dir / 'clustering_stats.json'
         if stats_json.exists():
             with open(stats_json, 'r') as f:
                 stats = json.load(f)
-                global_stats = stats.get('global_stats', {})
-                logger.info(f"    Convergence: {global_stats.get('convergence_ratio', 0):.2%}")
-                logger.info(f"    Best score: {global_stats.get('best_overall_score', np.nan):.2f}")
+            global_stats = stats.get('global_stats', {})
+            logger.info(f"  ✓ Clustering: {global_stats.get('num_clusters', '?')} clusters, "
+                        f"convergence {global_stats.get('convergence_ratio', 0):.1%}")
 
-                # Warn on clashes
-                if global_stats.get('clash_count', 0) > 0:
-                    logger.warning(f"    ⚠ {global_stats['clash_count']} clusters with clashes!")
-
-        return True
+            if global_stats.get('clash_count', 0) > 0:
+                logger.warning(f"    ⚠ {global_stats['clash_count']} clusters with clashes!")
+            return True
+        else:
+            logger.warning("  clustering_stats.json not created")
+            return False
 
     except subprocess.CalledProcessError as e:
         logger.error(f"  ✗ Clustering failed: {e.stderr}")
@@ -1223,7 +1256,7 @@ def process_single_pair(
         # Check if geometry CSVs contain saved_cluster=True rows (in-loop clustering)
         has_cluster_reps = bool(find_top_docked_pdbs(pair_cache, max_n=1))
         if has_cluster_reps:
-            logger.info("[6/8] Clustering & Statistics: ✓ DONE (in-loop clustering detected)")
+            logger.info("[6/8] Clustering & Statistics: in-loop clustering detected")
             mark_stage_complete(pair_cache, 'clustering', str(docking_dir))
         elif use_slurm:
             logger.info("[6/8] Clustering & Statistics: PENDING")
@@ -1232,6 +1265,12 @@ def process_single_pair(
         else:
             logger.info("[6/8] Clustering & Statistics: ✓ DONE (in-loop)")
             mark_stage_complete(pair_cache, 'clustering', str(docking_dir))
+
+    # Generate clustering statistics if missing (for ML feature extraction)
+    stats_json = docking_dir / 'clustering_stats.json'
+    if not stats_json.exists():
+        logger.info("  → Generating clustering statistics...")
+        run_clustering(docking_dir, rmsd_cutoff=2.0)
 
     cluster_dir = pair_cache / 'docking'  # Use docking dir since clustering is in-loop
 

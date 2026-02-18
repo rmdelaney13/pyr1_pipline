@@ -186,13 +186,12 @@ def extract_rosetta_relax_features(pair_cache: Path) -> Dict:
 
     Returns dict with distributional features:
         - rosetta_dG_sep_best/mean/std
-        - rosetta_packstat_best/mean
         - rosetta_buried_unsats_best/mean
         - rosetta_shape_comp_best/mean
+        - rosetta_cms_best/mean (ContactMolecularSurface - works for ligands)
         - rosetta_dsasa_int_mean
         - rosetta_hbonds_to_ligand_mean
         - rosetta_charge_satisfied_frac
-        - rosetta_dSASA_hphobic_mean, rosetta_dSASA_polar_mean
         - rosetta_nres_int_mean, rosetta_hbonds_int_mean
         - rosetta_n_structures_relaxed
     """
@@ -201,17 +200,15 @@ def extract_rosetta_relax_features(pair_cache: Path) -> Dict:
         'rosetta_dG_sep_best': np.nan,
         'rosetta_dG_sep_mean': np.nan,
         'rosetta_dG_sep_std': np.nan,
-        'rosetta_packstat_best': np.nan,
-        'rosetta_packstat_mean': np.nan,
         'rosetta_buried_unsats_best': np.nan,
         'rosetta_buried_unsats_mean': np.nan,
         'rosetta_shape_comp_best': np.nan,
         'rosetta_shape_comp_mean': np.nan,
+        'rosetta_cms_best': np.nan,
+        'rosetta_cms_mean': np.nan,
         'rosetta_dsasa_int_mean': np.nan,
         'rosetta_hbonds_to_ligand_mean': np.nan,
         'rosetta_charge_satisfied_frac': np.nan,
-        'rosetta_dSASA_hphobic_mean': np.nan,
-        'rosetta_dSASA_polar_mean': np.nan,
         'rosetta_nres_int_mean': np.nan,
         'rosetta_hbonds_int_mean': np.nan,
         'rosetta_n_structures_relaxed': np.nan,
@@ -240,17 +237,15 @@ def extract_rosetta_relax_features(pair_cache: Path) -> Dict:
             'rosetta_dG_sep_best': 'dG_sep_best',
             'rosetta_dG_sep_mean': 'dG_sep_mean',
             'rosetta_dG_sep_std': 'dG_sep_std',
-            'rosetta_packstat_best': 'packstat_best',
-            'rosetta_packstat_mean': 'packstat_mean',
             'rosetta_buried_unsats_best': 'buried_unsatisfied_polars_best',
             'rosetta_buried_unsats_mean': 'buried_unsatisfied_polars_mean',
             'rosetta_shape_comp_best': 'shape_complementarity_best',
             'rosetta_shape_comp_mean': 'shape_complementarity_mean',
+            'rosetta_cms_best': 'contact_molecular_surface_best',
+            'rosetta_cms_mean': 'contact_molecular_surface_mean',
             'rosetta_dsasa_int_mean': 'dsasa_int_mean',
             'rosetta_hbonds_to_ligand_mean': 'total_hbonds_to_ligand_mean',
-            'rosetta_charge_satisfied_frac': 'charge_satisfied_fraction_yes',
-            'rosetta_dSASA_hphobic_mean': 'dSASA_hphobic_mean',
-            'rosetta_dSASA_polar_mean': 'dSASA_polar_mean',
+            'rosetta_charge_satisfied_frac': 'charge_satisfied_mean',
             'rosetta_nres_int_mean': 'nres_int_mean',
             'rosetta_hbonds_int_mean': 'hbonds_int_mean',
             'rosetta_n_structures_relaxed': 'n_structures_relaxed',
