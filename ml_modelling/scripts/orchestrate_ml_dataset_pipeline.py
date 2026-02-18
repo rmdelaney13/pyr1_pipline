@@ -970,7 +970,8 @@ def process_single_pair(
     docking_repeats: int = 50,
     docking_arrays: int = 10,
     reference_chain: str = 'X',
-    reference_residue: int = 1
+    reference_residue: int = 1,
+    af3_args: Optional[Dict] = None
 ) -> Dict:
     """
     Process a single (ligand, variant) pair through the full pipeline.
@@ -985,12 +986,17 @@ def process_single_pair(
         docking_arrays: Number of SLURM array tasks for docking
         reference_chain: Chain of template ligand in reference PDB (default: 'X')
         reference_residue: Residue number of template ligand (default: 1)
+        af3_args: Dict with AF3 configuration (wt_sequence, templates, skip_af3, etc.)
 
     Returns:
         Dict with status and any errors
     """
     pair_id = pair['pair_id']
     pair_cache = cache_dir / pair_id
+
+    # Inject AF3 args into pair for Stage 8a to access
+    if af3_args:
+        pair['_af3_args'] = af3_args
 
     logger.info(f"\n{'='*60}")
     logger.info(f"Processing pair: {pair_id}")
@@ -1330,17 +1336,295 @@ def process_single_pair(
         logger.info("[7/8] Rosetta Relax: ✓ CACHED")
 
     # ──────────────────────────────────────────────────────────────
-    # STAGE 8: AF3 Predictions
+    # STAGE 8a: AF3 JSON Preparation (per-pair)
     # ──────────────────────────────────────────────────────────────
-    logger.info("[8/8] AF3 Predictions")
-    logger.warning("  (AF3 not yet implemented in orchestrator)")
+    af3_args = pair.get('_af3_args', {})
+    skip_af3 = af3_args.get('skip_af3', False)
+
+    if skip_af3:
+        logger.info("[8/8] AF3 Preparation: SKIPPED (--skip-af3)")
+    elif is_stage_complete(pair_cache, 'af3_binary_prep') and is_stage_complete(pair_cache, 'af3_ternary_prep'):
+        logger.info("[8/8] AF3 Preparation: ✓ CACHED")
+    else:
+        logger.info("[8/8] AF3 JSON Preparation")
+        from prepare_af3_ml import thread_mutations_to_sequence, create_af3_json
+
+        wt_sequence = af3_args.get('wt_sequence', '')
+        binary_template = af3_args.get('af3_binary_template', '')
+        ternary_template = af3_args.get('af3_ternary_template', '')
+
+        if not wt_sequence or not binary_template or not ternary_template:
+            logger.warning("  AF3 templates/WT sequence not configured; skipping AF3 prep")
+        else:
+            variant_sig_str = str(pair.get('variant_signature', ''))
+            ligand_smiles = pair.get('ligand_smiles', '')
+
+            mutant_seq = thread_mutations_to_sequence(wt_sequence, variant_sig_str)
+
+            for mode, template_path in [('binary', binary_template), ('ternary', ternary_template)]:
+                stage_name = f'af3_{mode}_prep'
+                if is_stage_complete(pair_cache, stage_name):
+                    logger.info(f"  AF3 {mode} prep: ✓ CACHED")
+                    continue
+
+                output_json = pair_cache / f'af3_{mode}' / f'{pair_id}_{mode}.json'
+                success = create_af3_json(
+                    template_path=template_path,
+                    mutant_sequence=mutant_seq,
+                    ligand_smiles=ligand_smiles,
+                    pair_id=pair_id,
+                    output_path=str(output_json),
+                    mode=mode,
+                )
+                if success:
+                    mark_stage_complete(pair_cache, stage_name, str(output_json))
+                    logger.info(f"  ✓ AF3 {mode} JSON: {output_json.name}")
+                else:
+                    logger.error(f"  ✗ Failed to create AF3 {mode} JSON")
 
     logger.info(f"✓ Pair {pair_id} processed successfully\n")
 
     return {'status': 'SUCCESS'}
 
 
+
+# ═══════════════════════════════════════════════════════════════════
+# AF3 POST-LOOP FUNCTIONS (Stage 8b)
+# ═══════════════════════════════════════════════════════════════════
+
+def collect_pending_af3_jsons(cache_dir: Path) -> Dict[str, List[Path]]:
+    """
+    Scan all pair caches for prepared AF3 JSONs that don't yet have output.
+
+    Returns:
+        {'binary': [path1, ...], 'ternary': [path1, ...]}
+    """
+    pending = {'binary': [], 'ternary': []}
+
+    for pair_dir in sorted(cache_dir.iterdir()):
+        if not pair_dir.is_dir() or pair_dir.name.startswith('af3_staging'):
+            continue
+
+        for mode in ('binary', 'ternary'):
+            af3_dir = pair_dir / f'af3_{mode}'
+            json_files = list(af3_dir.glob(f'*_{mode}.json'))
+            summary_file = af3_dir / 'summary.json'
+
+            # Pending = has input JSON but no summary.json yet
+            if json_files and not summary_file.exists():
+                pending[mode].extend(json_files)
+
+    return pending
+
+
+def analyze_af3_outputs(cache_dir: Path, af3_staging_dir: Path, af3_args: Dict) -> int:
+    """
+    Re-entry: scan AF3 output for completed predictions, extract metrics,
+    compute ligand RMSD, write summary.json per pair.
+
+    Returns:
+        Number of pairs analyzed
+    """
+    from prepare_af3_ml import extract_af3_metrics, compute_ligand_rmsd_to_rosetta, \
+        find_best_relaxed_pdb, write_summary_json
+
+    analyzed = 0
+
+    for pair_dir in sorted(cache_dir.iterdir()):
+        if not pair_dir.is_dir() or pair_dir.name.startswith('af3_staging'):
+            continue
+        pair_id = pair_dir.name
+
+        for mode in ('binary', 'ternary'):
+            summary_file = pair_dir / f'af3_{mode}' / 'summary.json'
+            if summary_file.exists():
+                continue  # Already analyzed
+
+            stage_name = f'af3_{mode}'
+            if is_stage_complete(pair_dir, stage_name):
+                continue
+
+            # Check if AF3 output exists
+            af3_output_dir = af3_staging_dir / f'{mode}_output'
+            name = f"{pair_id}_{mode}"
+
+            # Try both flat and nested output layouts
+            summary_conf = af3_output_dir / f"{name}_summary_confidences.json"
+            if not summary_conf.exists():
+                summary_conf = af3_output_dir / name / f"{name}_summary_confidences.json"
+            if not summary_conf.exists():
+                continue  # Not yet completed
+
+            logger.info(f"  Analyzing AF3 {mode} for {pair_id}...")
+            metrics = extract_af3_metrics(
+                af3_output_dir=str(af3_output_dir),
+                pair_id=pair_id,
+                mode=mode,
+            )
+
+            if metrics is None:
+                logger.warning(f"  Failed to extract metrics for {pair_id} {mode}")
+                continue
+
+            # Compute ligand RMSD
+            ligand_rmsd = None
+            best_pdb = find_best_relaxed_pdb(str(pair_dir))
+            if best_pdb:
+                cif_path = af3_output_dir / f"{name}_model.cif"
+                if not cif_path.exists():
+                    cif_path = af3_output_dir / name / f"{name}_model.cif"
+                if cif_path.exists():
+                    ligand_rmsd = compute_ligand_rmsd_to_rosetta(
+                        af3_cif_path=str(cif_path),
+                        rosetta_pdb_path=str(best_pdb),
+                    )
+
+            # Write summary.json
+            write_summary_json(str(pair_dir / f'af3_{mode}'), metrics, ligand_rmsd)
+            mark_stage_complete(pair_dir, stage_name, str(pair_dir / f'af3_{mode}'))
+            analyzed += 1
+
+            logger.info(f"  ✓ {pair_id} {mode}: ipTM={metrics.get('ipTM')}, "
+                         f"RMSD={ligand_rmsd}")
+
+    return analyzed
+
+
+def batch_and_submit_af3(
+    cache_dir: Path,
+    af3_staging_dir: Path,
+    af3_args: Dict
+) -> Dict[str, Optional[str]]:
+    """
+    Batch remaining AF3 JSONs into subdirectories and submit SLURM GPU array jobs.
+
+    Returns:
+        {'binary': job_id_or_None, 'ternary': job_id_or_None}
+    """
+    import shutil
+
+    pending = collect_pending_af3_jsons(cache_dir)
+    job_ids = {}
+
+    for mode in ('binary', 'ternary'):
+        json_files = pending[mode]
+        if not json_files:
+            logger.info(f"  No pending AF3 {mode} JSONs to submit")
+            job_ids[mode] = None
+            continue
+
+        logger.info(f"  Batching {len(json_files)} {mode} AF3 JSONs...")
+
+        # Create staging directory
+        staging_dir = af3_staging_dir / mode
+        staging_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy JSONs to staging (flat)
+        for jf in json_files:
+            shutil.copy2(str(jf), str(staging_dir / jf.name))
+
+        # Batch into subdirectories
+        batch_size = af3_args.get('af3_batch_size', 60)
+        all_jsons = sorted(staging_dir.glob('*.json'))
+        num_batches = max(1, -(-len(all_jsons) // batch_size))  # ceil division
+
+        for batch_idx in range(num_batches):
+            batch_name = f"batch_{batch_idx + 1:02d}"
+            batch_dir = staging_dir / batch_name
+            batch_dir.mkdir(parents=True, exist_ok=True)
+
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(all_jsons))
+            for jf in all_jsons[start:end]:
+                shutil.move(str(jf), str(batch_dir / jf.name))
+
+        logger.info(f"  Created {num_batches} batches of up to {batch_size} JSONs")
+
+        # Create output directory
+        output_dir = af3_staging_dir / f'{mode}_output'
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log_dir = output_dir / 'logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate SLURM script
+        partition = af3_args.get('af3_partition', 'aa100')
+        time_limit = af3_args.get('af3_time_limit', '01:00:00')
+        model_params = af3_args.get('af3_model_params_dir', '/projects/ryde3462/software/af3')
+        job_name = f"af3_ml_{mode}"
+
+        script_content = f"""#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --time={time_limit}
+#SBATCH --partition={partition}
+#SBATCH --qos=normal
+#SBATCH --gres=gpu:1
+#SBATCH --job-name={job_name}
+#SBATCH --output={log_dir}/af3_{mode}_%A_%a.out
+#SBATCH --ntasks=10
+#SBATCH --account=ucb472_asc2
+#SBATCH --array=1-{num_batches}
+
+module purge
+module load alphafold/3.0.0
+
+BASE_INPUT_DIR="{staging_dir}"
+BASE_OUTPUT_DIR="{output_dir}"
+export AF3_MODEL_PARAMETERS_DIR="{model_params}"
+
+BATCH_ID=$(printf "%02d" $SLURM_ARRAY_TASK_ID)
+BATCH_FOLDER="batch_${{BATCH_ID}}"
+
+export INPUT_DIR="${{BASE_INPUT_DIR}}/${{BATCH_FOLDER}}"
+export OUTPUT_DIR="${{BASE_OUTPUT_DIR}}"
+
+echo "Job Array ID: $SLURM_ARRAY_TASK_ID"
+echo "Processing Batch: $BATCH_FOLDER"
+echo "Input Dir:  $INPUT_DIR"
+echo "Output Dir: $OUTPUT_DIR"
+
+mkdir -p $OUTPUT_DIR
+
+if [ ! -d "$INPUT_DIR" ]; then
+    echo "Error: Input directory $INPUT_DIR does not exist!"
+    exit 1
+fi
+
+run_alphafold \\
+  --input_dir=$INPUT_DIR \\
+  --output_dir=$OUTPUT_DIR \\
+  --model_dir=$AF3_MODEL_PARAMETERS_DIR \\
+  --run_data_pipeline=false
+"""
+
+        script_path = af3_staging_dir / f'submit_af3_{mode}.sh'
+        with open(script_path, 'w', newline='\n') as f:
+            f.write(script_content)
+
+        logger.info(f"  Generated SLURM script: {script_path}")
+
+        # Submit
+        try:
+            result = subprocess.run(
+                ['sbatch', str(script_path)],
+                capture_output=True, text=True, check=True
+            )
+            job_id = result.stdout.strip().split()[-1]
+            logger.info(f"  ✓ AF3 {mode} submitted: job {job_id} ({num_batches} array tasks)")
+            job_ids[mode] = job_id
+        except subprocess.CalledProcessError as e:
+            logger.error(f"  ✗ AF3 {mode} submission failed: {e.stderr}")
+            job_ids[mode] = None
+        except FileNotFoundError:
+            logger.error("  ✗ sbatch not found (not on SLURM cluster?)")
+            job_ids[mode] = None
+
+    return job_ids
+
+
 def main():
+    # Import WT sequence default from prepare_af3_ml
+    from prepare_af3_ml import WT_PYR1_SEQUENCE
+
     parser = argparse.ArgumentParser(
         description='Orchestrate ML dataset generation pipeline',
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1356,10 +1640,43 @@ def main():
     parser.add_argument('--reference-chain', default='X', help='Chain of template ligand in reference PDB (default: X)')
     parser.add_argument('--reference-residue', type=int, default=1, help='Residue number of template ligand (default: 1)')
 
+    # AF3 arguments
+    af3_group = parser.add_argument_group('AF3 options')
+    af3_group.add_argument('--wt-sequence', default=WT_PYR1_SEQUENCE,
+                           help='WT PYR1 protein sequence (181 residues)')
+    af3_group.add_argument('--af3-binary-template',
+                           default=str(PROJECT_ROOT / 'design' / 'templates' / 'pyr1_binary_template.json'),
+                           help='Path to AF3 binary template JSON')
+    af3_group.add_argument('--af3-ternary-template',
+                           default=str(PROJECT_ROOT / 'design' / 'templates' / 'pyr1_ternary_template.json'),
+                           help='Path to AF3 ternary template JSON')
+    af3_group.add_argument('--af3-batch-size', type=int, default=60,
+                           help='Number of AF3 JSONs per SLURM batch (default: 60)')
+    af3_group.add_argument('--af3-partition', default='aa100',
+                           help='GPU partition for AF3 jobs (default: aa100)')
+    af3_group.add_argument('--af3-time-limit', default='01:00:00',
+                           help='Walltime per AF3 array task (default: 01:00:00)')
+    af3_group.add_argument('--af3-model-params-dir', default='/projects/ryde3462/software/af3',
+                           help='Path to AF3 model parameters')
+    af3_group.add_argument('--skip-af3', action='store_true',
+                           help='Skip AF3 preparation and submission')
+
     args = parser.parse_args()
 
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build AF3 args dict to pass through
+    af3_args = {
+        'wt_sequence': args.wt_sequence,
+        'af3_binary_template': args.af3_binary_template,
+        'af3_ternary_template': args.af3_ternary_template,
+        'af3_batch_size': args.af3_batch_size,
+        'af3_partition': args.af3_partition,
+        'af3_time_limit': args.af3_time_limit,
+        'af3_model_params_dir': args.af3_model_params_dir,
+        'skip_af3': args.skip_af3,
+    }
 
     # Load pairs
     logger.info(f"Loading pairs from {args.pairs_csv}...")
@@ -1370,7 +1687,7 @@ def main():
 
     logger.info(f"Processing {len(pairs_df)} pairs")
 
-    # Process each pair
+    # Process each pair (Stages 1-8a)
     results = []
 
     for idx, row in pairs_df.iterrows():
@@ -1383,13 +1700,45 @@ def main():
             docking_repeats=args.docking_repeats,
             docking_arrays=args.docking_arrays,
             reference_chain=args.reference_chain,
-            reference_residue=args.reference_residue
+            reference_residue=args.reference_residue,
+            af3_args=af3_args,
         )
 
         results.append({
             'pair_id': row['pair_id'],
             **result
         })
+
+    # ══════════════════════════════════════════════════════════════
+    # STAGE 8b: AF3 Batch Submit + Analyze (post-loop)
+    # ══════════════════════════════════════════════════════════════
+    if not args.skip_af3 and args.use_slurm:
+        af3_staging_dir = cache_dir / 'af3_staging'
+        af3_staging_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"\n{'='*60}")
+        logger.info("STAGE 8b: AF3 Batch Submit & Analyze")
+        logger.info(f"{'='*60}")
+
+        # Re-entry: analyze any completed AF3 output first
+        n_analyzed = analyze_af3_outputs(cache_dir, af3_staging_dir, af3_args)
+        if n_analyzed > 0:
+            logger.info(f"  Analyzed {n_analyzed} AF3 predictions from previous runs")
+
+        # Collect and submit remaining
+        pending = collect_pending_af3_jsons(cache_dir)
+        total_pending = sum(len(v) for v in pending.values())
+
+        if total_pending > 0:
+            logger.info(f"  {total_pending} AF3 predictions pending submission")
+            job_ids = batch_and_submit_af3(cache_dir, af3_staging_dir, af3_args)
+
+            for mode, jid in job_ids.items():
+                if jid:
+                    logger.info(f"  AF3 {mode} job: {jid}")
+            logger.info("  → Re-run orchestrator after AF3 jobs complete to analyze output")
+        else:
+            logger.info("  No pending AF3 submissions (all complete or not yet prepared)")
 
     # Save results summary
     results_df = pd.DataFrame(results)
